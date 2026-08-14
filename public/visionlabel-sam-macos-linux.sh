@@ -1,10 +1,65 @@
-#!/usr/bin/env python3
-"""Conector local do SAM para o VisionLabel.
+#!/usr/bin/env bash
+set -euo pipefail
 
-Use somente checkpoints baixados da fonte oficial da Meta. Exemplo:
-python visionlabel-sam-local.py --checkpoint sam_vit_b_01ec64.pth --model-type vit_b
-"""
+APP_DIR="${HOME}/.visionlabel-sam"
+VENV_DIR="${APP_DIR}/venv"
+CONNECTOR="${APP_DIR}/visionlabel-sam-local.py"
+CHECKPOINT="${APP_DIR}/sam_vit_b_01ec64.pth"
+READY_FILE="${APP_DIR}/dependencies-v2.ok"
+MODEL_URL="https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
+SITE_URL="https://visionlabel-anotador.eduardo1089.chatgpt.site"
 
+printf '\n==========================================\n'
+printf '       VisionLabel SAM local\n'
+printf '==========================================\n'
+printf 'Na primeira execucao, a preparacao pode demorar alguns minutos.\n\n'
+
+command -v python3 >/dev/null 2>&1 || {
+  printf 'Python 3 nao foi encontrado. Instale-o e execute este arquivo novamente.\n'
+  exit 1
+}
+
+mkdir -p "${APP_DIR}"
+MARKER_LINE="$(awk '/^# === VISIONLABEL_PYTHON ===$/{print NR; exit}' "$0")"
+tail -n "+$((MARKER_LINE + 1))" "$0" >"${CONNECTOR}"
+
+if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
+  printf 'Criando ambiente isolado...\n'
+  python3 -m venv "${VENV_DIR}"
+fi
+PYTHON="${VENV_DIR}/bin/python"
+
+if [[ ! -f "${READY_FILE}" ]]; then
+  printf 'Instalando PyTorch e dependencias do SAM. Aguarde...\n'
+  "${PYTHON}" -m pip install --upgrade pip
+  "${PYTHON}" -m pip install torch torchvision fastapi uvicorn pillow opencv-python-headless numpy
+  "${PYTHON}" -m pip install "https://github.com/facebookresearch/segment-anything/archive/refs/heads/main.zip"
+  touch "${READY_FILE}"
+fi
+
+if [[ ! -f "${CHECKPOINT}" ]]; then
+  printf 'Baixando o checkpoint oficial ViT-B, aproximadamente 375 MB...\n'
+  if command -v curl >/dev/null 2>&1; then
+    curl -L --fail --progress-bar "${MODEL_URL}" -o "${CHECKPOINT}"
+  elif command -v wget >/dev/null 2>&1; then
+    wget --show-progress "${MODEL_URL}" -O "${CHECKPOINT}"
+  else
+    printf 'Instale curl ou wget e execute novamente.\n'
+    exit 1
+  fi
+fi
+
+printf '\nPreparacao concluida. Mantenha este terminal aberto.\n'
+if command -v open >/dev/null 2>&1; then
+  open "${SITE_URL}" >/dev/null 2>&1 || true
+elif command -v xdg-open >/dev/null 2>&1; then
+  xdg-open "${SITE_URL}" >/dev/null 2>&1 || true
+fi
+
+"${PYTHON}" "${CONNECTOR}" --checkpoint "${CHECKPOINT}" --model-type vit_b --device auto
+exit $?
+
+# === VISIONLABEL_PYTHON ===
 from __future__ import annotations
 
 import argparse
@@ -32,7 +87,7 @@ class PredictionRequest(BaseModel):
     multimask_output: bool = True
 
 
-app = FastAPI(title="VisionLabel SAM local", version="1.0")
+app = FastAPI(title="VisionLabel SAM local", version="2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -70,13 +125,13 @@ def decode_image(data_url: str) -> np.ndarray:
         image_bytes = base64.b64decode(encoded)
         return np.asarray(Image.open(io.BytesIO(image_bytes)).convert("RGB"))
     except Exception as error:
-        raise HTTPException(status_code=400, detail="Imagem inválida.") from error
+        raise HTTPException(status_code=400, detail="Imagem invalida.") from error
 
 
 def mask_to_polygon(mask: np.ndarray) -> list[list[float]]:
     contours, _ = cv2.findContours(mask.astype(np.uint8), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     if not contours:
-        raise HTTPException(status_code=422, detail="O SAM não encontrou um contorno.")
+        raise HTTPException(status_code=422, detail="O SAM nao encontrou um contorno.")
     contour = max(contours, key=cv2.contourArea)
     epsilon = max(1.0, 0.002 * cv2.arcLength(contour, True))
     simplified = cv2.approxPolyDP(contour, epsilon, True)
@@ -89,10 +144,9 @@ def mask_to_polygon(mask: np.ndarray) -> list[list[float]]:
 def predict(payload: PredictionRequest):
     global current_image_hash
     if predictor is None:
-        raise HTTPException(status_code=503, detail="O modelo ainda está carregando.")
+        raise HTTPException(status_code=503, detail="O modelo ainda esta carregando.")
     if not payload.point_coords or len(payload.point_coords) != len(payload.point_labels):
-        raise HTTPException(status_code=400, detail="Envie pontos e rótulos correspondentes.")
-
+        raise HTTPException(status_code=400, detail="Envie pontos e rotulos correspondentes.")
     image_hash = hashlib.sha256(payload.image.encode("utf-8")).hexdigest()
     image = decode_image(payload.image)
     coordinates = np.asarray(payload.point_coords, dtype=np.float32)
@@ -120,32 +174,30 @@ def predict(payload: PredictionRequest):
 def main():
     global predictor
     parser = argparse.ArgumentParser(description="Executa o SAM localmente para o VisionLabel.")
-    parser.add_argument("--checkpoint", required=True, help="Caminho para o checkpoint .pth")
+    parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--model-type", choices=["vit_b", "vit_l", "vit_h"], default="vit_b")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     parser.add_argument("--port", type=int, default=7860)
     args = parser.parse_args()
-
     checkpoint = Path(args.checkpoint).expanduser().resolve()
     if not checkpoint.is_file():
-        raise SystemExit(f"Checkpoint não encontrado: {checkpoint}")
+        raise SystemExit(f"Checkpoint nao encontrado: {checkpoint}")
     mps_available = bool(getattr(torch.backends, "mps", None) and torch.backends.mps.is_available())
     if args.device == "auto":
         device = "cuda" if torch.cuda.is_available() else "mps" if mps_available else "cpu"
     else:
         device = args.device
     if device == "cuda" and not torch.cuda.is_available():
-        raise SystemExit("CUDA não está disponível. Use --device cpu ou instale o PyTorch com CUDA.")
+        raise SystemExit("CUDA nao esta disponivel. Use --device cpu.")
     if device == "mps" and not mps_available:
-        raise SystemExit("Apple Silicon/MPS não está disponível. Use --device cpu.")
-
-    print(f"Carregando SAM {args.model_type} em {device}…")
+        raise SystemExit("Apple Silicon/MPS nao esta disponivel. Use --device cpu.")
+    print(f"Carregando SAM {args.model_type} em {device}...")
     sam = sam_model_registry[args.model_type](checkpoint=str(checkpoint))
     sam.to(device=device)
     sam.eval()
     predictor = SamPredictor(sam)
     runtime.update({"device": device, "model_type": args.model_type})
-    print(f"VisionLabel SAM pronto em http://127.0.0.1:{args.port}")
+    print(f"SAM pronto em http://127.0.0.1:{args.port}")
     uvicorn.run(app, host="127.0.0.1", port=args.port, log_level="info")
 
 
