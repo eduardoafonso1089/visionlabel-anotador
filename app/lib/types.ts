@@ -6,7 +6,9 @@ export type Tool =
   | "freehand"
   | "point"
   | "sam"
-  | "split";
+  | "split"
+  | "transform"
+  | "reshape";
 
 export type Label = {
   id: string;

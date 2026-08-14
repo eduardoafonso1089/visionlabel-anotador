@@ -3,14 +3,15 @@
 import {
   Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
   Cloud, Combine, Copy, Download, Eye, Hand, ImagePlus, Keyboard, Link2,
-  ListRestart, LoaderCircle, Menu, MoreHorizontal, MousePointer2, PenLine,
+  ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine,
   Pentagon, Plus, Redo2, RotateCcw, Scissors, Search, Settings2, Sparkles,
-  Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut,
+  Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   deletePolygonVertex, edgeMidpoints, insertPolygonVertex, movePolygon,
-  MIN_VERTEX_DISTANCE, pointsToSvg, simplifyPolygon, splitPolygon, unionPolygons,
+  MIN_VERTEX_DISTANCE, pointsToSvg, polygonBounds, polygonCenter, reshapePolygon,
+  simplifyPolygon, snapPointToPolygons, splitPolygon, transformPolygon, unionPolygons,
   updatePolygonVertex,
 } from "./lib/geometry";
 import { exportCoco, exportProject, exportYoloZip } from "./lib/exporters";
@@ -41,6 +42,14 @@ const colors = ["#6c8cff", "#d987ff", "#26c6b6", "#ff8a65"];
 
 type PolygonDrag = { annotationId: string; startX: number; startY: number; points: number[] };
 type VertexDrag = { annotationId: string; vertexIndex: number };
+type TransformDrag = {
+  annotationId: string;
+  kind: "scale" | "rotate";
+  center: { x: number; y: number };
+  startAngle: number;
+  startDistance: number;
+  points: number[];
+};
 
 function ToolButton({ title, active, disabled, onClick, children, keyHint }: { title: string; active?: boolean; disabled?: boolean; onClick?: () => void; children: React.ReactNode; keyHint?: string }) {
   return <button className={`tool-btn ${active ? "active" : ""}`} aria-label={title} title={title} disabled={disabled} onClick={onClick}>{children}{keyHint && <small>{keyHint}</small>}</button>;
@@ -59,6 +68,11 @@ export default function Home() {
   const [selectedVertex, setSelectedVertex] = useState<{ annotationId: string; vertexIndex: number } | null>(null);
   const [polygonDrag, setPolygonDrag] = useState<PolygonDrag | null>(null);
   const [vertexDrag, setVertexDrag] = useState<VertexDrag | null>(null);
+  const [transformDrag, setTransformDrag] = useState<TransformDrag | null>(null);
+  const [reshapeDraft, setReshapeDraft] = useState<number[]>([]);
+  const [reshapeDrawing, setReshapeDrawing] = useState(false);
+  const [snapping, setSnapping] = useState(true);
+  const [snapGuide, setSnapGuide] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(92);
   const [search, setSearch] = useState("");
   const [quality, setQuality] = useState(false);
@@ -96,11 +110,28 @@ export default function Home() {
   const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const vertexDragRef = useRef<VertexDrag | null>(null);
+  const transformDragRef = useRef<TransformDrag | null>(null);
   const idCounter = useRef(0);
 
   const asset = assets.find((item) => item.id === current) ?? assets[0];
   const currentAnnotations = annotations.filter((annotation) => annotation.asset === current);
   const activeAnnotation = annotations.find((annotation) => annotation.id === selected);
+  const activePolygonBounds = activeAnnotation?.type === "polygon" && (activeAnnotation.pts?.length ?? 0) >= 6
+    ? polygonBounds(activeAnnotation.pts ?? [])
+    : null;
+  const activePolygonCenter = activeAnnotation?.type === "polygon" && (activeAnnotation.pts?.length ?? 0) >= 6
+    ? polygonCenter(activeAnnotation.pts ?? [])
+    : null;
+  const transformRotationY = activePolygonBounds
+    ? activePolygonBounds.y > 52
+      ? activePolygonBounds.y - 42
+      : activePolygonBounds.y + activePolygonBounds.height + 42
+    : 0;
+  const transformRotationAnchorY = activePolygonBounds
+    ? activePolygonBounds.y > 52
+      ? activePolygonBounds.y
+      : activePolygonBounds.y + activePolygonBounds.height
+    : 0;
   const selectedPolygons = annotations.filter((annotation) => multiSelected.includes(annotation.id) && annotation.type === "polygon");
   const getLabel = useCallback((id: string) => labels.find((label) => label.id === id) ?? labels[0], [labels]);
   const completed = useMemo(() => new Set(annotations.map((annotation) => annotation.asset)).size, [annotations]);
@@ -120,7 +151,7 @@ export default function Home() {
     if (!history.length) return;
     setAnnotations(history.at(-1)!);
     setHistory((items) => items.slice(0, -1));
-    setSelected(null); setMultiSelected([]); setSelectedVertex(null); setSaved(false);
+    setSelected(null); setMultiSelected([]); setSelectedVertex(null); setSnapGuide(null); setSaved(false);
   }, [history]);
 
   const deleteSelection = useCallback(() => {
@@ -176,11 +207,13 @@ export default function Home() {
       if (event.key === "Enter" && tool === "polygon") finishPolygon();
       if (event.key === "Escape") {
         setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
-        setSplitStart(null); setSplitEnd(null); setSamPrompts([]); setSamPreview([]);
+        setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
+        transformDragRef.current = null; setTransformDrag(null); setSnapGuide(null);
+        setSamPrompts([]); setSamPreview([]);
         setSelected(null); setMultiSelected([]); setSelectedVertex(null);
       }
       if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); deleteSelection(); }
-      const tools: Record<string, Tool> = { v: "select", h: "pan", b: "box", p: "polygon", f: "freehand", k: "point", s: "sam" };
+      const tools: Record<string, Tool> = { v: "select", h: "pan", b: "box", p: "polygon", f: "freehand", k: "point", s: "sam", t: "transform", r: "reshape" };
       const nextTool = tools[event.key.toLowerCase()];
       if (nextTool) {
         if (nextTool === "sam" && !samEndpoint) {
@@ -195,7 +228,9 @@ export default function Home() {
   }, [deleteSelection, finishPolygon, labels, samEndpoint, tool, undo]);
 
   function resetDrafts() {
-    setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null); setSplitStart(null); setSplitEnd(null); clearSam();
+    setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
+    setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
+    transformDragRef.current = null; setTransformDrag(null); setSnapGuide(null); clearSam();
   }
 
   function editorPoint(clientX: number, clientY: number) {
@@ -245,6 +280,9 @@ export default function Home() {
     if (tool === "box") { setStart(point); setDraft({ ...point, w: 0, h: 0 }); capture(event.pointerId); }
     if (tool === "polygon") setPolygonDraft((points) => [...points, point.x, point.y]);
     if (tool === "freehand" && !freehandDrawing) { setFreehandDraft([point.x, point.y]); setFreehandDrawing(true); }
+    if (tool === "reshape" && activeAnnotation?.type === "polygon" && !reshapeDrawing) {
+      setReshapeDraft([point.x, point.y]); setReshapeDrawing(true);
+    }
     if (tool === "point") {
       remember(); const id = makeId("annotation");
       setAnnotations((items) => [...items, { id, asset: current, label: activeLabel, type: "point", ...point }]);
@@ -264,7 +302,11 @@ export default function Home() {
     }
     const activeVertexDrag = vertexDragRef.current ?? vertexDrag;
     if (activeVertexDrag) {
-      setAnnotations((items) => items.map((annotation) => annotation.id === activeVertexDrag.annotationId ? { ...annotation, pts: updatePolygonVertex(annotation.pts ?? [], activeVertexDrag.vertexIndex, point.x, point.y) } : annotation)); setSaved(false); return;
+      const target = snapping
+        ? snapPointToPolygons(point, currentAnnotations, activeVertexDrag.annotationId)
+        : { ...point, snapped: false };
+      setSnapGuide(target.snapped ? { x: target.x, y: target.y } : null);
+      setAnnotations((items) => items.map((annotation) => annotation.id === activeVertexDrag.annotationId ? { ...annotation, pts: updatePolygonVertex(annotation.pts ?? [], activeVertexDrag.vertexIndex, target.x, target.y) } : annotation)); setSaved(false); return;
     }
     if (tool === "pan" && panStart && scrollRef.current) {
       scrollRef.current.scrollLeft = panStart.left - (event.clientX - panStart.x); scrollRef.current.scrollTop = panStart.top - (event.clientY - panStart.y); return;
@@ -275,15 +317,22 @@ export default function Home() {
         return Math.hypot(point.x - lastX, point.y - lastY) >= 4 ? [...points, point.x, point.y] : points;
       }); return;
     }
+    if (tool === "reshape" && reshapeDrawing) {
+      setReshapeDraft((points) => {
+        const lastX = points.at(-2) ?? point.x; const lastY = points.at(-1) ?? point.y;
+        return Math.hypot(point.x - lastX, point.y - lastY) >= 4 ? [...points, point.x, point.y] : points;
+      }); return;
+    }
     if (tool === "split" && splitStart) { setSplitEnd(point); return; }
     if (!start || tool !== "box") return;
     setDraft({ x: Math.min(start.x, point.x), y: Math.min(start.y, point.y), w: Math.abs(point.x - start.x), h: Math.abs(point.y - start.y) });
   }
 
   function canvasPointerUp() {
-    if (polygonDrag || vertexDragRef.current || vertexDrag) { vertexDragRef.current = null; setPolygonDrag(null); setVertexDrag(null); return; }
+    if (polygonDrag || vertexDragRef.current || vertexDrag) { vertexDragRef.current = null; setPolygonDrag(null); setVertexDrag(null); setSnapGuide(null); return; }
     if (tool === "pan") { setPanStart(null); return; }
     if (tool === "freehand") return;
+    if (tool === "reshape") return;
     if (tool === "split" && splitStart && splitEnd) { finishSplit(); return; }
     if (tool !== "box" || !draft || draft.w < 8 || draft.h < 8) { setStart(null); setDraft(null); return; }
     remember(); const id = makeId("annotation");
@@ -302,6 +351,21 @@ export default function Home() {
   function finishFreehandWithRightClick(event: React.MouseEvent<SVGSVGElement>) {
     event.preventDefault();
     if (tool === "freehand" && freehandDrawing) finishFreehand();
+    if (tool === "reshape" && reshapeDrawing) finishReshape();
+  }
+
+  function finishReshape() {
+    setReshapeDrawing(false);
+    if (activeAnnotation?.type !== "polygon" || reshapeDraft.length < 4) { setReshapeDraft([]); return; }
+    const reshaped = reshapePolygon(activeAnnotation.pts ?? [], reshapeDraft);
+    setReshapeDraft([]);
+    if (!reshaped) {
+      showToast("Comece e termine o traço sobre duas bordas diferentes do polígono.");
+      return;
+    }
+    remember();
+    setAnnotations((items) => items.map((item) => item.id === activeAnnotation.id ? { ...item, pts: reshaped } : item));
+    setSelectedVertex(null); showToast("Borda remodelada. A ferramenta continua ativa.");
   }
 
   function finishSplit() {
@@ -318,12 +382,62 @@ export default function Home() {
   }
 
   function beginPolygonDrag(event: React.PointerEvent, annotation: Annotation) {
+    if (tool === "reshape") {
+      event.preventDefault(); event.stopPropagation();
+      const point = editorPoint(event.clientX, event.clientY);
+      setSelected(annotation.id); setMultiSelected([annotation.id]); setSelectedVertex(null);
+      setReshapeDraft([point.x, point.y]); setReshapeDrawing(true);
+      return;
+    }
+    if (tool === "transform") {
+      event.preventDefault(); event.stopPropagation();
+      setSelected(annotation.id); setMultiSelected([annotation.id]); setSelectedVertex(null);
+      return;
+    }
     if (tool !== "select") return;
     event.stopPropagation();
     if (event.shiftKey) { toggleMultiSelection(annotation.id); return; }
     const point = editorPoint(event.clientX, event.clientY);
     remember(); setSelected(annotation.id); setMultiSelected([annotation.id]); setSelectedVertex(null);
     setPolygonDrag({ annotationId: annotation.id, startX: point.x, startY: point.y, points: [...(annotation.pts ?? [])] }); capture(event.pointerId);
+  }
+
+  function beginTransform(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, kind: "scale" | "rotate") {
+    if (tool !== "transform" || annotation.type !== "polygon") return;
+    event.preventDefault(); event.stopPropagation(); remember();
+    const point = editorPoint(event.clientX, event.clientY);
+    const center = polygonCenter(annotation.pts ?? []);
+    const drag: TransformDrag = {
+      annotationId: annotation.id,
+      kind,
+      center,
+      startAngle: Math.atan2(point.y - center.y, point.x - center.x),
+      startDistance: Math.max(1, Math.hypot(point.x - center.x, point.y - center.y)),
+      points: [...(annotation.pts ?? [])],
+    };
+    transformDragRef.current = drag; setTransformDrag(drag);
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { capture(event.pointerId); }
+  }
+
+  function moveTransformPointer(event: React.PointerEvent<SVGCircleElement>) {
+    const drag = transformDragRef.current;
+    if (!drag) return;
+    event.preventDefault(); event.stopPropagation();
+    const point = editorPoint(event.clientX, event.clientY);
+    const angle = Math.atan2(point.y - drag.center.y, point.x - drag.center.x);
+    const distance = Math.max(1, Math.hypot(point.x - drag.center.x, point.y - drag.center.y));
+    const nextPoints = drag.kind === "rotate"
+      ? transformPolygon(drag.points, drag.center, 1, angle - drag.startAngle)
+      : transformPolygon(drag.points, drag.center, distance / drag.startDistance, 0);
+    setAnnotations((items) => items.map((item) => item.id === drag.annotationId ? { ...item, pts: nextPoints } : item));
+    setSaved(false);
+  }
+
+  function finishTransformPointer(event: React.PointerEvent<SVGCircleElement>) {
+    if (!transformDragRef.current) return;
+    event.preventDefault(); event.stopPropagation();
+    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* no-op */ }
+    transformDragRef.current = null; setTransformDrag(null); showToast("Transformação aplicada. A ferramenta continua ativa.");
   }
 
   function captureVertexPointer(event: React.PointerEvent<SVGCircleElement>, drag: VertexDrag) {
@@ -349,12 +463,12 @@ export default function Home() {
       if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId);
     } catch { /* A captura já pode ter sido liberada pelo navegador. */ }
     vertexDragRef.current = null;
-    setVertexDrag(null);
+    setVertexDrag(null); setSnapGuide(null);
   }
 
   function beginVertexDrag(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, vertexIndex: number) {
     if (tool !== "select") return;
-    event.preventDefault(); event.stopPropagation(); remember(); setSelected(annotation.id); setMultiSelected([annotation.id]);
+    event.preventDefault(); event.stopPropagation(); remember(); setSelected(annotation.id); setMultiSelected([annotation.id]); setSnapGuide(null);
     const drag = { annotationId: annotation.id, vertexIndex };
     setSelectedVertex(drag); captureVertexPointer(event, drag);
   }
@@ -494,7 +608,7 @@ export default function Home() {
         <div className="tools">
           <div><ToolButton title="Selecionar e mover (V)" keyHint="V" active={tool === "select"} onClick={() => setTool("select")}><MousePointer2 size={18} /></ToolButton><ToolButton title="Mover canvas (H)" keyHint="H" active={tool === "pan"} onClick={() => setTool("pan")}><Hand size={18} /></ToolButton></div><i />
           <div><ToolButton title="Caixa (B)" keyHint="B" active={tool === "box"} onClick={() => setTool("box")}><Box size={18} /></ToolButton><ToolButton title="Polígono por pontos (P)" keyHint="P" active={tool === "polygon"} onClick={() => setTool("polygon")}><Pentagon size={18} /></ToolButton><ToolButton title="Polígono à mão livre (F)" keyHint="F" active={tool === "freehand"} onClick={() => setTool("freehand")}><PenLine size={18} /></ToolButton><ToolButton title="Ponto-chave (K)" keyHint="K" active={tool === "point"} onClick={() => setTool("point")}><span className="point-icon" /></ToolButton><ToolButton title="Segmentar com SAM (S)" keyHint="S" active={tool === "sam"} onClick={activateSam}><WandSparkles size={18} /></ToolButton></div><i />
-          <div className="edit-tools"><ToolButton title="Simplificar polígono" disabled={activeAnnotation?.type !== "polygon"} onClick={simplifySelected}><ListRestart size={18} /></ToolButton><ToolButton title="Duplicar polígono" disabled={activeAnnotation?.type !== "polygon"} onClick={duplicateSelected}><Copy size={17} /></ToolButton><ToolButton title="Unir polígonos selecionados" disabled={selectedPolygons.length < 2} onClick={mergeSelected}><Combine size={18} /></ToolButton><ToolButton title="Cortar polígono com linha" disabled={activeAnnotation?.type !== "polygon"} active={tool === "split"} onClick={() => setTool("split")}><Scissors size={17} /></ToolButton></div><i />
+          <div className="edit-tools"><ToolButton title="Simplificar polígono" disabled={activeAnnotation?.type !== "polygon"} onClick={simplifySelected}><ListRestart size={18} /></ToolButton><ToolButton title="Duplicar polígono" disabled={activeAnnotation?.type !== "polygon"} onClick={duplicateSelected}><Copy size={17} /></ToolButton><ToolButton title="Unir polígonos selecionados" disabled={selectedPolygons.length < 2} onClick={mergeSelected}><Combine size={18} /></ToolButton><ToolButton title="Cortar polígono com linha" disabled={activeAnnotation?.type !== "polygon"} active={tool === "split"} onClick={() => setTool("split")}><Scissors size={17} /></ToolButton><ToolButton title="Rotacionar e redimensionar (T)" keyHint="T" disabled={activeAnnotation?.type !== "polygon"} active={tool === "transform"} onClick={() => setTool("transform")}><Maximize2 size={17} /></ToolButton><ToolButton title="Remodelar borda à mão livre (R)" keyHint="R" disabled={activeAnnotation?.type !== "polygon"} active={tool === "reshape"} onClick={() => setTool("reshape")}><PenTool size={17} /></ToolButton><ToolButton title={snapping ? "Encaixe em vértices e arestas ativo" : "Ativar encaixe em vértices e arestas"} active={snapping} onClick={() => { setSnapping((value) => !value); setSnapGuide(null); }}><Magnet size={17} /></ToolButton></div><i />
           <div><ToolButton title="Desfazer" disabled={!history.length} onClick={undo}><Undo2 size={18} /></ToolButton><ToolButton title="Refazer" disabled><Redo2 size={18} /></ToolButton><ToolButton title={selectedVertex ? "Excluir nó e avançar na sequência" : polygonDraft.length ? "Remover último ponto criado" : "Excluir forma inteira"} disabled={!selected && !polygonDraft.length} onClick={deleteSelection}><Trash2 size={18} /></ToolButton></div><span className="spacer" />
           <div className="zoom"><button onClick={() => setZoom((value) => Math.max(30, value - 10))}><ZoomOut size={15} /></button><span>{zoom}%</span><button onClick={() => setZoom((value) => Math.min(400, value + 10))}><ZoomIn size={15} /></button></div><ToolButton title="Redefinir zoom" onClick={() => setZoom(92)}><RotateCcw size={16} /></ToolButton>
         </div>
@@ -507,23 +621,34 @@ export default function Home() {
               const label = getLabel(annotation.label);
               const isSelected = multiSelected.includes(annotation.id);
               if (annotation.type === "box") return <g key={annotation.id} onPointerDown={(event) => selectAnnotation(event, annotation)}><rect x={annotation.x} y={annotation.y} width={annotation.w} height={annotation.h} fill={`${label.color}28`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} /><g transform={`translate(${annotation.x},${(annotation.y ?? 0) - 31})`}><rect width={Math.max(100, label.name.length * 10 + 25)} height="31" rx="5" fill={label.color} /><text x="12" y="21" fontSize="16" fontWeight="700" fill="#112018">{label.name}</text></g></g>;
-              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={isSelected ? "movable-polygon" : ""} onPointerDown={(event) => beginPolygonDrag(event, annotation)} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} />{isSelected && annotation.id === selected && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r="2.75" />)}{isSelected && annotation.id === selected && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r="8" fill="#fff" stroke={label.color} strokeWidth="4" /> : null)}</g>;
+              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={isSelected && tool === "select" ? "movable-polygon" : ""} onPointerDown={(event) => beginPolygonDrag(event, annotation)} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} />{tool === "select" && isSelected && annotation.id === selected && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r="2.75" />)}{tool === "select" && isSelected && annotation.id === selected && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r="8" fill="#fff" stroke={label.color} strokeWidth="4" /> : null)}</g>;
               return <g key={annotation.id} onPointerDown={(event) => selectAnnotation(event, annotation)}><circle cx={annotation.x} cy={annotation.y} r={isSelected ? 17 : 13} fill="#fff" stroke={label.color} strokeWidth="6" /><circle cx={annotation.x} cy={annotation.y} r="4" fill={label.color} /></g>;
             })}
+            {tool === "transform" && activeAnnotation?.type === "polygon" && activePolygonBounds && activePolygonCenter && <g className="transform-overlay">
+              <rect x={activePolygonBounds.x} y={activePolygonBounds.y} width={activePolygonBounds.width} height={activePolygonBounds.height} />
+              <line x1={activePolygonCenter.x} y1={transformRotationAnchorY} x2={activePolygonCenter.x} y2={transformRotationY} />
+              <circle className="transform-handle rotate-handle" cx={activePolygonCenter.x} cy={transformRotationY} r="10" onPointerDown={(event) => beginTransform(event, activeAnnotation, "rotate")} onPointerMove={moveTransformPointer} onPointerUp={finishTransformPointer} onPointerCancel={finishTransformPointer} />
+              <circle className="transform-handle scale-handle" cx={activePolygonBounds.x + activePolygonBounds.width} cy={activePolygonBounds.y + activePolygonBounds.height} r="10" onPointerDown={(event) => beginTransform(event, activeAnnotation, "scale")} onPointerMove={moveTransformPointer} onPointerUp={finishTransformPointer} onPointerCancel={finishTransformPointer} />
+              <circle className="transform-center" cx={activePolygonCenter.x} cy={activePolygonCenter.y} r="5" />
+            </g>}
             {draft && <rect x={draft.x} y={draft.y} width={draft.w} height={draft.h} fill={`${getLabel(activeLabel).color}25`} stroke={getLabel(activeLabel).color} strokeWidth="3" strokeDasharray="9 7" />}
             {polygonDraft.length > 1 && <g><polyline points={pointsToSvg(polygonDraft)} fill={`${getLabel(activeLabel).color}20`} stroke={getLabel(activeLabel).color} strokeWidth="3" strokeDasharray="9 7" />{polygonDraft.map((coordinate, index, points) => index % 2 === 0 ? <circle key={index} cx={coordinate} cy={points[index + 1]} r="6" fill={getLabel(activeLabel).color} stroke="#fff" strokeWidth="2" /> : null)}</g>}
             {freehandDraft.length > 1 && <polyline className="freehand-line" points={pointsToSvg(freehandDraft)} fill={`${getLabel(activeLabel).color}22`} stroke={getLabel(activeLabel).color} strokeWidth="4" />}
+            {reshapeDraft.length > 1 && <g><polyline className="reshape-line" points={pointsToSvg(reshapeDraft)} />{reshapeDraft.length >= 4 && <><circle className="reshape-endpoint" cx={reshapeDraft[0]} cy={reshapeDraft[1]} r="7" /><circle className="reshape-endpoint" cx={reshapeDraft.at(-2)} cy={reshapeDraft.at(-1)} r="7" /></>}</g>}
             {splitStart && splitEnd && <line className="split-line" x1={splitStart.x} y1={splitStart.y} x2={splitEnd.x} y2={splitEnd.y} />}
+            {snapGuide && <g className="snap-guide"><circle cx={snapGuide.x} cy={snapGuide.y} r="12" /><line x1={snapGuide.x - 7} y1={snapGuide.y} x2={snapGuide.x + 7} y2={snapGuide.y} /><line x1={snapGuide.x} y1={snapGuide.y - 7} x2={snapGuide.x} y2={snapGuide.y + 7} /></g>}
             {samPreview.length >= 6 && <polygon className="sam-mask-preview" points={pointsToSvg(samPreview)} fill={`${getLabel(activeLabel).color}52`} stroke={getLabel(activeLabel).color} strokeWidth="4" strokeDasharray="10 6" />}
             {samPrompts.map((prompt, index) => <g key={index} className={`sam-prompt ${prompt.label ? "positive" : "negative"}`}><circle cx={prompt.x} cy={prompt.y} r="13" /><line x1={prompt.x - 6} y1={prompt.y} x2={prompt.x + 6} y2={prompt.y} />{prompt.label === 1 && <line x1={prompt.x} y1={prompt.y - 6} x2={prompt.x} y2={prompt.y + 6} />}</g>)}
           </svg>
           {tool === "polygon" && polygonDraft.length > 0 && <div className="tip"><kbd>Enter</kbd> concluir · <kbd>Esc</kbd> cancelar</div>}
           {tool === "freehand" && <div className="tip">{freehandDrawing ? <>Mova o mouse pelo contorno · <kbd>botão direito</kbd> fecha o polígono</> : <><kbd>clique esquerdo</kbd> inicia sem precisar manter pressionado</>}</div>}
           {tool === "split" && <div className="tip">Arraste uma linha de uma borda à outra do polígono</div>}
+          {tool === "transform" && <div className="tip">Arraste o círculo superior para girar · arraste o canto para redimensionar</div>}
+          {tool === "reshape" && <div className="tip">{reshapeDrawing ? <>Contorne a nova borda · <kbd>botão direito</kbd> aplica</> : <>Comece sobre uma borda e termine sobre outra, sem manter o clique</>}</div>}
           {activeAnnotation?.type === "polygon" && tool === "select" && <div className="polygon-tip">Roda do mouse amplia · nó + Delete remove em sequência · corpo + Delete apaga tudo</div>}
           {tool === "sam" && <div className="sam-controls"><div><button className={samPromptMode === 1 ? "active positive" : ""} onClick={() => setSamPromptMode(1)}><CirclePlus size={15} /> Incluir</button><button className={samPromptMode === 0 ? "active negative" : ""} onClick={() => setSamPromptMode(0)}><CircleMinus size={15} /> Excluir</button></div><span>{samLoading ? <><LoaderCircle className="spin" size={14} /> Segmentando…</> : `${samPrompts.length} ponto${samPrompts.length === 1 ? "" : "s"}`}</span><div><button disabled={!samPrompts.length || samLoading} onClick={clearSam}>Limpar</button><button className="accept" disabled={samPreview.length < 6 || samLoading} onClick={acceptSamMask}><Check size={14} /> Aceitar máscara</button><button aria-label="Configurar SAM" onClick={openSamSettings}><Settings2 size={15} /></button></div></div>}
         </div></div></div>
-        <div className="status"><div><button onClick={() => go(-1)} disabled={assets[0].id === current}><ChevronLeft size={16} /></button><span><b>{assets.findIndex((item) => item.id === current) + 1}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{selectedVertex ? "Nó selecionado — Delete avança até excluir o último" : polygonDraft.length ? `${polygonDraft.length / 2} ponto(s) — Delete desfaz na ordem de criação` : multiSelected.length > 1 ? `${multiSelected.length} polígonos selecionados` : currentAnnotations.length ? `${currentAnnotations.length} anotações nesta imagem` : "Pronta para anotar"}</p><button><Keyboard size={15} /> Atalhos</button></div>
+        <div className="status"><div><button onClick={() => go(-1)} disabled={assets[0].id === current}><ChevronLeft size={16} /></button><span><b>{assets.findIndex((item) => item.id === current) + 1}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{transformDrag ? "Transformando polígono…" : reshapeDrawing ? "Remodelando borda…" : selectedVertex ? `Nó selecionado — encaixe ${snapping ? "ativo" : "inativo"}` : polygonDraft.length ? `${polygonDraft.length / 2} ponto(s) — Delete desfaz na ordem de criação` : multiSelected.length > 1 ? `${multiSelected.length} polígonos selecionados` : currentAnnotations.length ? `${currentAnnotations.length} anotações nesta imagem` : "Pronta para anotar"}</p><button><Keyboard size={15} /> Atalhos</button></div>
       </section>
 
       <aside className={`labels ${rightOpen ? "open" : ""}`}>
@@ -533,7 +658,7 @@ export default function Home() {
           {addingLabel ? <div className="new-class"><input autoFocus placeholder="Nome da classe" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><button onClick={addClass}>Adicionar</button><button onClick={() => setAddingLabel(false)}>Cancelar</button></div> : <button className="add-class" onClick={() => setAddingLabel(true)}><Plus size={15} /> Nova classe</button>}
           <div className="instances"><div><b>ANOTAÇÕES · {currentAnnotations.length}</b><MoreHorizontal size={16} /></div>{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); return <button key={annotation.id} className={multiSelected.includes(annotation.id) ? "active" : ""} onClick={(event) => { if (event.shiftKey && annotation.type === "polygon") toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{label.name} <small>#{index + 1}</small></span><Eye size={14} /></button>; })}</div>
         </> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>Boa consistência</span></div><article className="warn"><b>!</b><div><strong>1 possível sobreposição</strong><p>Revise “cultura #2” perto da borda direita.</p></div></article><article><b>✓</b><div><strong>Classes válidas</strong><p>Todas as formas possuem uma classe.</p></div></article><article><b>✓</b><div><strong>Sem formas vazias</strong><p>Nenhuma área inválida foi detectada.</p></div></article><button onClick={() => { setQuality(false); setSelected(currentAnnotations[0]?.id ?? null); setMultiSelected(currentAnnotations[0] ? [currentAnnotations[0].id] : []); }}>Revisar apontamento</button></div>}
-        <div className="hint"><b>{activeAnnotation?.type === "polygon" ? "Edição vetorial" : "Dica rápida"}</b><p>{activeAnnotation?.type === "polygon" ? "Mova, edite vértices, simplifique, duplique, una com Shift+clique ou corte pela barra superior." : "Use B, P, F, K e S para anotar sem tirar a mão do teclado."}</p></div>
+        <div className="hint"><b>{activeAnnotation?.type === "polygon" ? "Edição vetorial estilo QGIS" : "Dica rápida"}</b><p>{activeAnnotation?.type === "polygon" ? "Mova e encaixe vértices, remodele bordas, transforme, simplifique, una ou corte pela barra superior." : "Use B, P, F, K e S para anotar sem tirar a mão do teclado."}</p></div>
       </aside>
     </div>
 

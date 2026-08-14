@@ -19,3 +19,15 @@
 .sam-local-modal{width:min(620px,100%);max-height:min(88vh,780px);overflow:auto}.hardware-warning{border:1px solid #e4c982;background:#fff9e8;border-radius:10px;padding:12px 13px;margin-bottom:12px}.hardware-warning>b,.sam-setup>b{display:block;font-size:11px;color:#5d4a1c;margin-bottom:5px}.hardware-warning p{font-size:9px;line-height:1.55;color:#75643c;margin:4px 0}.hardware-warning strong{color:#513e13}.sam-setup{border:1px solid #dce5de;border-radius:10px;padding:12px 13px;margin-bottom:12px;background:#f8faf8}.sam-setup>b{color:#405b49}.sam-setup ol{margin:7px 0 9px;padding-left:19px;color:#69766e;font-size:9px;line-height:1.6}.sam-setup li{margin:3px 0}.sam-setup a{display:inline-flex;align-items:center;gap:5px;color:#2d6846;font-weight:700;text-decoration:none}.sam-setup a:hover{text-decoration:underline}.sam-setup pre{white-space:pre-wrap;word-break:break-word;margin:5px 0 0;padding:7px 8px;border-radius:6px;background:#17281e;color:#d8efdf;font-family:var(--mono),monospace;font-size:8px;line-height:1.45}.sam-local-modal .sam-contract{margin-top:4px}.stage.freehand svg{cursor:crosshair}.freehand-line{pointer-events:none}
 .sam-setup li small{display:block;margin:2px 0 3px;color:#7b877f}.canvas{min-width:260px;max-width:none;transition:none}.scroll{overscroll-behavior:contain}.vertex-handle{pointer-events:all}.edge-handle{stroke-width:1.4;pointer-events:visiblePainted}.edge-handle:hover{r:4;opacity:1;fill:var(--lime)}
 @media(max-width:560px){.sam-local-modal{padding:14px}.hardware-warning,.sam-setup{padding:10px}.sam-setup pre{font-size:7px}}
+
+/* QGIS-inspired transform, reshape and snapping tools */
+.stage.reshape svg{cursor:crosshair}.stage.transform svg{cursor:default}
+.reshape-line{fill:none;stroke:#7d5ce7;stroke-width:5;stroke-dasharray:10 6;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.reshape-endpoint{fill:#fff;stroke:#7d5ce7;stroke-width:4;pointer-events:none}
+.transform-overlay rect{fill:none;stroke:#f7fff8;stroke-width:3;stroke-dasharray:9 6;pointer-events:none}
+.transform-overlay line{stroke:#f7fff8;stroke-width:3;stroke-dasharray:7 5;pointer-events:none}
+.transform-handle{fill:#fff;stroke:#315f43;stroke-width:4;pointer-events:all}
+.transform-handle.rotate-handle{cursor:grab}.transform-handle.scale-handle{cursor:nwse-resize}
+.transform-center{fill:#315f43;stroke:#fff;stroke-width:2;pointer-events:none}
+.snap-guide{pointer-events:none}.snap-guide circle{fill:rgba(168,224,99,.18);stroke:#a8e063;stroke-width:3}
+.snap-guide line{stroke:#fff;stroke-width:2.5;stroke-linecap:round}

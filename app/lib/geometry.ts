@@ -77,6 +77,201 @@ export function polygonBounds(points: number[]) {
   };
 }
 
+export function polygonCenter(points: number[]) {
+  const bounds = polygonBounds(points);
+  return {
+    x: bounds.x + bounds.width / 2,
+    y: bounds.y + bounds.height / 2,
+  };
+}
+
+function fitPointsToEditor(points: number[]) {
+  let fitted = [...points];
+  let bounds = polygonBounds(fitted);
+  if (bounds.width > EDITOR_WIDTH || bounds.height > EDITOR_HEIGHT) {
+    const center = polygonCenter(fitted);
+    const factor = Math.min(
+      EDITOR_WIDTH / Math.max(bounds.width, 1),
+      EDITOR_HEIGHT / Math.max(bounds.height, 1),
+    );
+    fitted = fitted.map((coordinate, index) =>
+      index % 2
+        ? center.y + (coordinate - center.y) * factor
+        : center.x + (coordinate - center.x) * factor,
+    );
+    bounds = polygonBounds(fitted);
+  }
+  const dx = bounds.x < 0
+    ? -bounds.x
+    : bounds.x + bounds.width > EDITOR_WIDTH
+      ? EDITOR_WIDTH - bounds.x - bounds.width
+      : 0;
+  const dy = bounds.y < 0
+    ? -bounds.y
+    : bounds.y + bounds.height > EDITOR_HEIGHT
+      ? EDITOR_HEIGHT - bounds.y - bounds.height
+      : 0;
+  return fitted.map((coordinate, index) => coordinate + (index % 2 ? dy : dx));
+}
+
+export function transformPolygon(
+  points: number[],
+  center: { x: number; y: number },
+  scale = 1,
+  rotation = 0,
+) {
+  const cosine = Math.cos(rotation);
+  const sine = Math.sin(rotation);
+  const safeScale = Math.max(0.08, Math.min(12, scale));
+  const transformed: number[] = [];
+  for (let index = 0; index < points.length; index += 2) {
+    const dx = (points[index] - center.x) * safeScale;
+    const dy = (points[index + 1] - center.y) * safeScale;
+    transformed.push(
+      center.x + dx * cosine - dy * sine,
+      center.y + dx * sine + dy * cosine,
+    );
+  }
+  return fitPointsToEditor(transformed);
+}
+
+function segmentProjection(
+  point: { x: number; y: number },
+  start: { x: number; y: number },
+  end: { x: number; y: number },
+) {
+  const dx = end.x - start.x;
+  const dy = end.y - start.y;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared
+    ? Math.max(0, Math.min(1, ((point.x - start.x) * dx + (point.y - start.y) * dy) / lengthSquared))
+    : 0;
+  const x = start.x + t * dx;
+  const y = start.y + t * dy;
+  return { x, y, t, distance: Math.hypot(point.x - x, point.y - y) };
+}
+
+export function snapPointToPolygons(
+  point: { x: number; y: number },
+  annotations: Annotation[],
+  excludeId: string,
+  tolerance = 13,
+) {
+  let best = { ...point, snapped: false, distance: tolerance };
+  for (const annotation of annotations) {
+    if (annotation.id === excludeId || annotation.type !== "polygon" || !annotation.pts?.length) continue;
+    const points = annotation.pts;
+    for (let index = 0; index < points.length; index += 2) {
+      const vertexDistance = Math.hypot(point.x - points[index], point.y - points[index + 1]);
+      if (vertexDistance < best.distance) {
+        best = { x: points[index], y: points[index + 1], snapped: true, distance: vertexDistance };
+      }
+      const next = (index + 2) % points.length;
+      const projection = segmentProjection(
+        point,
+        { x: points[index], y: points[index + 1] },
+        { x: points[next], y: points[next + 1] },
+      );
+      if (projection.distance < best.distance) {
+        best = { x: projection.x, y: projection.y, snapped: true, distance: projection.distance };
+      }
+    }
+  }
+  return best;
+}
+
+function openPathSimplify(points: Array<[number, number]>, tolerance: number) {
+  return rdp(points, tolerance);
+}
+
+function ringArc(vertices: Array<[number, number]>, start: number, end: number) {
+  const result: Array<[number, number]> = [vertices[start]];
+  let index = start;
+  while (index !== end) {
+    index = (index + 1) % vertices.length;
+    result.push(vertices[index]);
+  }
+  return result;
+}
+
+function lineLength(points: Array<[number, number]>) {
+  return points.slice(1).reduce(
+    (sum, point, index) => sum + Math.hypot(point[0] - points[index][0], point[1] - points[index][1]),
+    0,
+  );
+}
+
+export function reshapePolygon(points: number[], path: number[], snapDistance = 34) {
+  if (points.length < 6 || path.length < 4) return null;
+  const ring: Array<[number, number]> = [];
+  for (let index = 0; index < points.length; index += 2) ring.push([points[index], points[index + 1]]);
+  const rawPath: Array<[number, number]> = [];
+  for (let index = 0; index < path.length; index += 2) rawPath.push([path[index], path[index + 1]]);
+
+  const endpointTargets = [rawPath[0], rawPath.at(-1)!].map(([x, y]) => ({ x, y }));
+  const snaps = endpointTargets.map((target) => {
+    let best = { edge: 0, x: 0, y: 0, t: 0, distance: Number.POSITIVE_INFINITY };
+    ring.forEach((vertex, edge) => {
+      const next = ring[(edge + 1) % ring.length];
+      const projection = segmentProjection(target, { x: vertex[0], y: vertex[1] }, { x: next[0], y: next[1] });
+      if (projection.distance < best.distance) best = { edge, ...projection };
+    });
+    return best;
+  });
+  if (snaps.some((snap) => snap.distance > snapDistance)) return null;
+
+  const insertions = new Map<number, Array<{ endpoint: number; t: number; point: [number, number] }>>();
+  snaps.forEach((snap, endpoint) => {
+    const list = insertions.get(snap.edge) ?? [];
+    list.push({ endpoint, t: snap.t, point: [snap.x, snap.y] });
+    insertions.set(snap.edge, list);
+  });
+
+  const augmented: Array<[number, number]> = [];
+  const endpointIndices = [-1, -1];
+  ring.forEach((vertex, edge) => {
+    augmented.push(vertex);
+    for (const insertion of (insertions.get(edge) ?? []).sort((a, b) => a.t - b.t)) {
+      if (insertion.t <= 0.015) endpointIndices[insertion.endpoint] = augmented.length - 1;
+      else if (insertion.t >= 0.985) {
+        // The endpoint is the first vertex of the next edge and is resolved after the ring is built.
+        endpointIndices[insertion.endpoint] = (edge + 1) % ring.length;
+      } else {
+        augmented.push(insertion.point);
+        endpointIndices[insertion.endpoint] = augmented.length - 1;
+      }
+    }
+  });
+
+  // Re-resolve endpoints by coordinates because earlier insertions shift later indices.
+  snaps.forEach((snap, endpoint) => {
+    endpointIndices[endpoint] = augmented.reduce((bestIndex, vertex, index) =>
+      Math.hypot(vertex[0] - snap.x, vertex[1] - snap.y) <
+      Math.hypot(augmented[bestIndex][0] - snap.x, augmented[bestIndex][1] - snap.y)
+        ? index
+        : bestIndex, 0);
+  });
+  const [startIndex, endIndex] = endpointIndices;
+  if (startIndex === endIndex) return null;
+
+  const simplifiedPath = openPathSimplify(rawPath, 2.2);
+  simplifiedPath[0] = augmented[startIndex];
+  simplifiedPath[simplifiedPath.length - 1] = augmented[endIndex];
+  const forward = ringArc(augmented, startIndex, endIndex);
+  const backward = ringArc(augmented, endIndex, startIndex);
+  let result: Array<[number, number]>;
+  if (lineLength(forward) <= lineLength(backward)) {
+    result = [...simplifiedPath, ...backward.slice(1, -1)];
+  } else {
+    result = [...forward, ...simplifiedPath.slice(1, -1).reverse()];
+  }
+  const deduplicated = result.filter((point, index) => {
+    const previous = result[(index - 1 + result.length) % result.length];
+    return Math.hypot(point[0] - previous[0], point[1] - previous[1]) >= 1;
+  });
+  return deduplicated.length >= 3 ? deduplicated.flat() : null;
+}
+
 export function annotationBounds(annotation: Annotation) {
   if (annotation.type === "box") {
     return {
