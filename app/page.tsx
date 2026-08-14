@@ -2,10 +2,10 @@
 
 import {
   Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
-  Cloud, Combine, Copy, Download, Eye, EyeOff, Hand, ImagePlus, Keyboard, Languages, Link2,
+  Cloud, Combine, Copy, Download, Eye, EyeOff, FolderOpen, Hand, ImagePlus, Keyboard, Languages, Link2,
   ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine,
-  Monitor, Moon, Pentagon, Plus, Redo2, RotateCcw, Scissors, Search, Settings2, Sparkles,
-  Sun, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
+  Monitor, Moon, Palette, Pencil, Pentagon, Plus, Redo2, RotateCcw, Scissors, Search, Settings2, Sparkles,
+  Sun, Tags, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
@@ -63,7 +63,13 @@ function ToolButton({ title, active, disabled, onClick, children, keyHint }: { t
 export default function Home() {
   const [assets, setAssets] = useState(demoAssets);
   const [current, setCurrent] = useState("i1");
-  const [labels, setLabels] = useState(startLabels);
+  const [labels, setLabels] = useState<Label[]>(() => {
+    if (typeof window === "undefined") return startLabels;
+    try {
+      const stored = JSON.parse(localStorage.getItem("visionlabel-labels") ?? "null");
+      return Array.isArray(stored) && stored.length ? stored : startLabels;
+    } catch { return startLabels; }
+  });
   const [activeLabel, setActiveLabel] = useState("weed");
   const [annotations, setAnnotations] = useState(startAnnotations);
   const [history, setHistory] = useState<Annotation[][]>([]);
@@ -89,9 +95,14 @@ export default function Home() {
   const [exporting, setExporting] = useState(false);
   const [saved, setSaved] = useState(true);
   const [newLabel, setNewLabel] = useState("");
-  const [addingLabel, setAddingLabel] = useState(false);
+  const [newLabelColor, setNewLabelColor] = useState(colors[0]);
+  const [batchLabel, setBatchLabel] = useState("weed");
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [projectOpen, setProjectOpen] = useState(false);
+  const [projectEditing, setProjectEditing] = useState(false);
+  const [projectName, setProjectName] = useState(() => typeof window === "undefined" ? "Ervas daninhas — Talhão 07" : localStorage.getItem("visionlabel-project-name") || "Ervas daninhas — Talhão 07");
+  const [projectNameDraft, setProjectNameDraft] = useState("");
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [preferencesTab, setPreferencesTab] = useState<"appearance" | "language">("appearance");
   const [language, setLanguage] = useState<Language>(() => {
@@ -128,6 +139,9 @@ export default function Home() {
   const [samPreview, setSamPreview] = useState<number[]>([]);
   const [samLoading, setSamLoading] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const labelInputRef = useRef<HTMLInputElement>(null);
+  const projectInputRef = useRef<HTMLInputElement>(null);
+  const projectSwitcherRef = useRef<HTMLDivElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
   const annotationDragRef = useRef<AnnotationDrag | null>(null);
@@ -160,6 +174,9 @@ export default function Home() {
       ? activePolygonBounds.y
       : activePolygonBounds.y + activePolygonBounds.height
     : 0;
+  const handleScale = Math.max(0.25, Math.min(3.34, 100 / zoom));
+  const selectedIds = multiSelected.length ? multiSelected : selected ? [selected] : [];
+  const resolvedBatchLabel = labels.some((label) => label.id === batchLabel) ? batchLabel : labels[0]?.id ?? "";
   const selectedPolygons = annotations.filter((annotation) => multiSelected.includes(annotation.id) && annotation.type === "polygon");
   const getLabel = useCallback((id: string) => labels.find((label) => label.id === id) ?? labels[0], [labels]);
   const completed = useMemo(() => new Set(annotations.map((annotation) => annotation.asset)).size, [annotations]);
@@ -171,6 +188,22 @@ export default function Home() {
     localStorage.setItem("visionlabel-theme", themeMode);
     localStorage.setItem("visionlabel-language", language);
   }, [language, themeMode]);
+
+  useEffect(() => {
+    localStorage.setItem("visionlabel-labels", JSON.stringify(labels));
+  }, [labels]);
+
+  useEffect(() => {
+    localStorage.setItem("visionlabel-project-name", projectName);
+  }, [projectName]);
+
+  useEffect(() => {
+    const closeProjectMenu = (event: PointerEvent) => {
+      if (!projectSwitcherRef.current?.contains(event.target as Node)) setProjectOpen(false);
+    };
+    document.addEventListener("pointerdown", closeProjectMenu);
+    return () => document.removeEventListener("pointerdown", closeProjectMenu);
+  }, []);
 
   function makeId(prefix: string) {
     idCounter.current += 1;
@@ -241,6 +274,7 @@ export default function Home() {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); return; }
       if (event.key === "Enter" && tool === "polygon") finishPolygon();
       if (event.key === "Escape") {
+        setProjectOpen(false); setProjectEditing(false);
         setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
         setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
         annotationDragRef.current = null; setAnnotationDrag(null);
@@ -310,6 +344,15 @@ export default function Home() {
   }
 
   function canvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
+    if (event.button === 1 || (tool === "pan" && event.button === 0)) {
+      event.preventDefault();
+      const scroller = scrollRef.current;
+      if (scroller) {
+        setPanStart({ x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop });
+        capture(event.pointerId);
+      }
+      return;
+    }
     if (event.button !== 0) return;
     const point = editorPoint(event.clientX, event.clientY);
     if (tool === "select") {
@@ -318,11 +361,6 @@ export default function Home() {
         additiveIds: event.shiftKey ? [...multiSelected] : [],
       };
       selectionMarqueeRef.current = marquee; setSelectionMarquee(marquee); setSelectedVertex(null); capture(event.pointerId); return;
-    }
-    if (tool === "pan") {
-      const scroller = scrollRef.current;
-      if (scroller) { setPanStart({ x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop }); capture(event.pointerId); }
-      return;
     }
     if (tool === "box") { setStart(point); setDraft({ ...point, w: 0, h: 0 }); capture(event.pointerId); }
     if (tool === "polygon") {
@@ -363,7 +401,7 @@ export default function Home() {
       setSnapGuide(target.snapped ? { x: target.x, y: target.y } : null);
       setAnnotations((items) => items.map((annotation) => annotation.id === activeVertexDrag.annotationId ? { ...annotation, pts: updatePolygonVertex(annotation.pts ?? [], activeVertexDrag.vertexIndex, target.x, target.y) } : annotation)); setSaved(false); return;
     }
-    if (tool === "pan" && panStart && scrollRef.current) {
+    if (panStart && scrollRef.current) {
       scrollRef.current.scrollLeft = panStart.left - (event.clientX - panStart.x); scrollRef.current.scrollTop = panStart.top - (event.clientY - panStart.y); return;
     }
     if (tool === "freehand" && freehandDrawing) {
@@ -384,9 +422,9 @@ export default function Home() {
   }
 
   function canvasPointerUp() {
+    if (panStart) { setPanStart(null); return; }
     if (selectionMarqueeRef.current) { finishSelectionMarquee(); return; }
     if (vertexDragRef.current || vertexDrag) { vertexDragRef.current = null; setVertexDrag(null); setSnapGuide(null); return; }
-    if (tool === "pan") { setPanStart(null); return; }
     if (tool === "freehand") return;
     if (tool === "reshape") return;
     if (tool === "split" && splitStart && splitEnd) { finishSplit(); return; }
@@ -470,6 +508,7 @@ export default function Home() {
   }
 
   function beginAnnotationDrag(event: React.PointerEvent<SVGElement>, annotation: Annotation) {
+    if (event.button !== 0) return;
     if (tool === "reshape") {
       event.preventDefault(); event.stopPropagation();
       const point = editorPoint(event.clientX, event.clientY);
@@ -519,7 +558,7 @@ export default function Home() {
   }
 
   function beginTransform(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, kind: "scale" | "rotate") {
-    if (tool !== "transform" || annotation.type !== "polygon") return;
+    if (event.button !== 0 || tool !== "transform" || annotation.type !== "polygon") return;
     event.preventDefault(); event.stopPropagation(); remember();
     const point = editorPoint(event.clientX, event.clientY);
     const center = polygonCenter(annotation.pts ?? []);
@@ -583,14 +622,14 @@ export default function Home() {
   }
 
   function beginVertexDrag(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, vertexIndex: number) {
-    if (tool !== "select") return;
+    if (event.button !== 0 || tool !== "select") return;
     event.preventDefault(); event.stopPropagation(); remember(); setSelected(annotation.id); setMultiSelected([annotation.id]); setSnapGuide(null);
     const drag = { annotationId: annotation.id, vertexIndex };
     setSelectedVertex(drag); captureVertexPointer(event, drag);
   }
 
   function insertVertex(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, edgeIndex: number, x: number, y: number) {
-    if (tool !== "select") return;
+    if (event.button !== 0 || tool !== "select") return;
     event.preventDefault(); event.stopPropagation();
     const points = annotation.pts ?? [];
     const nearbyVertex = points.findIndex((coordinate, index) =>
@@ -678,9 +717,44 @@ export default function Home() {
   }
 
   function addClass() {
-    if (!newLabel.trim()) return; const id = makeId("label");
-    setLabels((items) => [...items, { id, name: newLabel.trim(), color: colors[items.length % colors.length], key: String(Math.min(items.length + 1, 9)) }]);
-    setActiveLabel(id); setNewLabel(""); setAddingLabel(false);
+    const name = newLabel.trim();
+    if (!name) return;
+    const existing = labels.find((label) => label.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+    if (existing) {
+      setActiveLabel(existing.id); setBatchLabel(existing.id); setNewLabel("");
+      showToast(`${existing.name} já existe e agora é a classe ativa.`);
+      requestAnimationFrame(() => labelInputRef.current?.focus());
+      return;
+    }
+    const id = makeId("label");
+    const key = Array.from({ length: 9 }, (_, index) => String(index + 1)).find((candidate) => !labels.some((label) => label.key === candidate)) ?? "";
+    setLabels((items) => [...items, { id, name, color: newLabelColor, key }]);
+    setActiveLabel(id); setBatchLabel(id); setNewLabel("");
+    setNewLabelColor(colors[(labels.length + 1) % colors.length]);
+    showToast(`${name} criada e selecionada.`);
+    requestAnimationFrame(() => labelInputRef.current?.focus());
+  }
+
+  function reclassifySelection() {
+    if (!selectedIds.length || !resolvedBatchLabel) return;
+    const label = labels.find((item) => item.id === resolvedBatchLabel);
+    if (!label) return;
+    remember();
+    setAnnotations((items) => items.map((annotation) => selectedIds.includes(annotation.id) ? { ...annotation, label: resolvedBatchLabel } : annotation));
+    setActiveLabel(resolvedBatchLabel); setSaved(false);
+    showToast(`${selectedIds.length} anotação(ões) alteradas para ${label.name}.`);
+  }
+
+  function beginProjectRename() {
+    setProjectNameDraft(projectName); setProjectEditing(true);
+    requestAnimationFrame(() => projectInputRef.current?.focus());
+  }
+
+  function saveProjectName() {
+    const name = projectNameDraft.trim();
+    if (!name) return;
+    setProjectName(name); setProjectEditing(false); setProjectOpen(false);
+    showToast("Nome do projeto atualizado.");
   }
 
   async function exportData(kind: "coco" | "yolo" | "project") {
@@ -724,7 +798,7 @@ export default function Home() {
 
   return <main className="shell">
     <header className="topbar">
-      <div className="brand-side"><button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button><div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i /><button className="project"><em />Ervas daninhas — Talhão 07 <ChevronDown size={14} /></button></div>
+      <div className="brand-side"><button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button><div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i /><div className="project-switcher" ref={projectSwitcherRef}><button className={`project ${projectOpen ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={projectOpen} onClick={() => { setProjectOpen((value) => !value); setProjectEditing(false); }}><em />{projectName} <ChevronDown size={14} /></button>{projectOpen && <section className="project-pop" role="dialog" aria-label={copy.projectCurrent}><p>{copy.projectCurrent}</p>{projectEditing ? <div className="project-rename"><input ref={projectInputRef} value={projectNameDraft} onChange={(event) => setProjectNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveProjectName(); if (event.key === "Escape") setProjectEditing(false); }} /><button onClick={saveProjectName}><Check size={14} />{copy.save}</button></div> : <><div className="project-summary"><span><em />{projectName}</span><small>{assets.length} {copy.projectImages} · {annotations.length} {copy.projectAnnotations}</small></div><button onClick={beginProjectRename}><Pencil size={14} /><span><b>{copy.renameProject}</b><small>{projectName}</small></span></button><button onClick={() => { setProjectOpen(false); setLeftOpen(true); }}><FolderOpen size={14} /><span><b>{copy.viewImages}</b><small>{assets.length} {copy.projectImages}</small></span></button></>}</section>}</div></div>
       <div className="head-actions"><span className={`save ${saved ? "done" : ""}`}><Cloud size={14} />{saved ? copy.saved : copy.saving}</span><button className={`sam-connection ${samEndpoint ? "connected" : ""}`} onClick={openSamSettings}><Link2 size={14} />{samEndpoint ? copy.samActive : copy.activateSam}</button><div className="export"><button className="export-main" disabled={exporting} onClick={() => setExportOpen(!exportOpen)}>{exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {copy.export} <ChevronDown size={13} /></button>{exportOpen && <div className="export-pop"><p>{copy.exportFormat}</p><button onClick={() => void exportData("coco")}><b>COCO JSON</b><span>{copy.cocoDesc}</span></button><button onClick={() => void exportData("yolo")}><b>YOLO ZIP</b><span>{copy.yoloDesc}</span></button><button onClick={() => void exportData("project")}><b>VisionLabel</b><span>{copy.projectBackup}</span></button></div>}</div><button className="preferences-button" title={copy.preferences} aria-label={copy.preferences} onClick={() => setPreferencesOpen(true)}><Languages size={17} /></button><button className="avatar">EA</button><button className="mobile" onClick={() => setRightOpen(true)} aria-label={copy.classes}><MoreHorizontal size={19} /></button></div>
     </header>
 
@@ -742,22 +816,22 @@ export default function Home() {
 
       <section className="editor">
         <div className="tools">
-          <div><ToolButton title={copy.select} keyHint="V" active={tool === "select"} onClick={() => setTool("select")}><MousePointer2 size={18} /></ToolButton><ToolButton title={copy.pan} keyHint="H" active={tool === "pan"} onClick={() => setTool("pan")}><Hand size={18} /></ToolButton></div><i />
+          <div><ToolButton title={copy.select} keyHint="V" active={tool === "select"} onClick={() => setTool("select")}><MousePointer2 size={18} /></ToolButton><ToolButton title={`${copy.pan} · ${copy.middlePan}`} keyHint="H" active={tool === "pan"} onClick={() => setTool("pan")}><Hand size={18} /></ToolButton></div><i />
           <div><ToolButton title={copy.box} keyHint="B" active={tool === "box"} onClick={() => setTool("box")}><Box size={18} /></ToolButton><ToolButton title={copy.polygon} keyHint="P" active={tool === "polygon"} onClick={() => setTool("polygon")}><Pentagon size={18} /></ToolButton><ToolButton title={copy.freehand} keyHint="F" active={tool === "freehand"} onClick={() => setTool("freehand")}><PenLine size={18} /></ToolButton><ToolButton title={copy.point} keyHint="K" active={tool === "point"} onClick={() => setTool("point")}><span className="point-icon" /></ToolButton><ToolButton title={copy.sam} keyHint="S" active={tool === "sam"} onClick={activateSam}><WandSparkles size={18} /></ToolButton></div><i />
           <div className="edit-tools"><ToolButton title={copy.simplify} disabled={activeAnnotation?.type !== "polygon"} onClick={simplifySelected}><ListRestart size={18} /></ToolButton><ToolButton title={copy.duplicate} disabled={activeAnnotation?.type !== "polygon"} onClick={duplicateSelected}><Copy size={17} /></ToolButton><ToolButton title={copy.merge} disabled={selectedPolygons.length < 2} onClick={mergeSelected}><Combine size={18} /></ToolButton><ToolButton title={copy.split} disabled={activeAnnotation?.type !== "polygon"} active={tool === "split"} onClick={() => setTool("split")}><Scissors size={17} /></ToolButton><ToolButton title={copy.transform} keyHint="T" disabled={activeAnnotation?.type !== "polygon"} active={tool === "transform"} onClick={() => setTool("transform")}><Maximize2 size={17} /></ToolButton><ToolButton title={copy.reshape} keyHint="R" disabled={activeAnnotation?.type !== "polygon"} active={tool === "reshape"} onClick={() => setTool("reshape")}><PenTool size={17} /></ToolButton><ToolButton title={snapping ? copy.snapOn : copy.snapOff} active={snapping} onClick={() => { setSnapping((value) => !value); setSnapGuide(null); }}><Magnet size={17} /></ToolButton></div><i />
           <div><ToolButton title="Desfazer" disabled={!history.length} onClick={undo}><Undo2 size={18} /></ToolButton><ToolButton title="Refazer" disabled><Redo2 size={18} /></ToolButton><ToolButton title={selectedVertex ? "Excluir nó e avançar na sequência" : polygonDraft.length ? "Remover último ponto criado" : "Excluir forma inteira"} disabled={!selected && !polygonDraft.length} onClick={deleteSelection}><Trash2 size={18} /></ToolButton></div><span className="spacer" />
           <div className="zoom"><button onClick={() => setZoom((value) => Math.max(30, value - 10))}><ZoomOut size={15} /></button><span>{zoom}%</span><button onClick={() => setZoom((value) => Math.min(400, value + 10))}><ZoomIn size={15} /></button></div><ToolButton title="Redefinir zoom" onClick={() => setZoom(92)}><RotateCcw size={16} /></ToolButton>
         </div>
 
-        <div className={`stage ${tool}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}><div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
+        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}><div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img crossOrigin="anonymous" src={asset.src} alt={`Imagem para anotação: ${asset.name}`} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (asset.width !== image.naturalWidth || asset.height !== image.naturalHeight) setAssets((items) => items.map((item) => item.id === asset.id ? { ...item, width: image.naturalWidth, height: image.naturalHeight } : item)); }} />
-          <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => tool === "polygon" && finishPolygon()}>
+          <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onAuxClick={(event) => event.preventDefault()} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => tool === "polygon" && finishPolygon()}>
             {visibleAnnotations.map((annotation) => {
               const label = getLabel(annotation.label);
               const isSelected = multiSelected.includes(annotation.id);
               if (annotation.type === "box") return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><rect x={annotation.x} y={annotation.y} width={annotation.w} height={annotation.h} fill={`${label.color}28`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} /><g transform={`translate(${annotation.x},${(annotation.y ?? 0) - 31})`}><rect width={Math.max(100, label.name.length * 10 + 25)} height="31" rx="5" fill={label.color} /><text x="12" y="21" fontSize="16" fontWeight="700" fill="#112018">{label.name}</text></g></g>;
-              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={tool === "select" ? "movable-annotation" : ""} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} />{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r="2.75" />)}{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r="8" fill="#fff" stroke={label.color} strokeWidth="4" /> : null)}</g>;
+              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={tool === "select" ? "movable-annotation" : ""} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} />{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r={3 * handleScale} strokeWidth={1.4 * handleScale} />)}{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r={8 * handleScale} fill="#fff" stroke={label.color} strokeWidth={4 * handleScale} /> : null)}</g>;
               return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><circle cx={annotation.x} cy={annotation.y} r={isSelected ? 17 : 13} fill="#fff" stroke={label.color} strokeWidth="6" /><circle cx={annotation.x} cy={annotation.y} r="4" fill={label.color} /></g>;
             })}
             {selectionMarquee && <rect className="selection-marquee" x={Math.min(selectionMarquee.startX, selectionMarquee.currentX)} y={Math.min(selectionMarquee.startY, selectionMarquee.currentY)} width={Math.abs(selectionMarquee.currentX - selectionMarquee.startX)} height={Math.abs(selectionMarquee.currentY - selectionMarquee.startY)} />}
@@ -769,7 +843,7 @@ export default function Home() {
               <circle className="transform-center" cx={activePolygonCenter.x} cy={activePolygonCenter.y} r="5" />
             </g>}
             {draft && <rect x={draft.x} y={draft.y} width={draft.w} height={draft.h} fill={`${getLabel(activeLabel).color}25`} stroke={getLabel(activeLabel).color} strokeWidth="3" strokeDasharray="9 7" />}
-            {polygonDraft.length > 1 && <g><polyline points={pointsToSvg(polygonDraft)} fill={`${getLabel(activeLabel).color}20`} stroke={getLabel(activeLabel).color} strokeWidth="3" strokeDasharray="9 7" />{polygonDraft.map((coordinate, index, points) => index % 2 === 0 ? <circle className={index === 0 && polygonDraft.length >= 6 ? "polygon-close-point" : ""} key={index} cx={coordinate} cy={points[index + 1]} r={index === 0 && polygonDraft.length >= 6 ? 9 : 6} fill={getLabel(activeLabel).color} stroke="#fff" strokeWidth="2" /> : null)}</g>}
+            {polygonDraft.length > 1 && <g><polyline points={pointsToSvg(polygonDraft)} fill={`${getLabel(activeLabel).color}20`} stroke={getLabel(activeLabel).color} strokeWidth="3" strokeDasharray="9 7" />{polygonDraft.map((coordinate, index, points) => index % 2 === 0 ? <circle className={index === 0 && polygonDraft.length >= 6 ? "polygon-close-point" : ""} key={index} cx={coordinate} cy={points[index + 1]} r={(index === 0 && polygonDraft.length >= 6 ? 9 : 6) * handleScale} fill={getLabel(activeLabel).color} stroke="#fff" strokeWidth={2 * handleScale} /> : null)}</g>}
             {freehandDraft.length > 1 && <polyline className="freehand-line" points={pointsToSvg(freehandDraft)} fill={`${getLabel(activeLabel).color}22`} stroke={getLabel(activeLabel).color} strokeWidth="4" />}
             {reshapeDraft.length > 1 && <g><polyline className="reshape-line" points={pointsToSvg(reshapeDraft)} />{reshapeDraft.length >= 4 && <><circle className="reshape-endpoint" cx={reshapeDraft[0]} cy={reshapeDraft[1]} r="7" /><circle className="reshape-endpoint" cx={reshapeDraft.at(-2)} cy={reshapeDraft.at(-1)} r="7" /></>}</g>}
             {splitStart && splitEnd && <line className="split-line" x1={splitStart.x} y1={splitStart.y} x2={splitEnd.x} y2={splitEnd.y} />}
@@ -782,7 +856,7 @@ export default function Home() {
           {tool === "split" && <div className="tip">{copy.splitTip}</div>}
           {tool === "transform" && <div className="tip">{copy.transformTip}</div>}
           {tool === "reshape" && <div className="tip">{reshapeDrawing ? (reshapeStartInside ? copy.reshapeAdd : copy.reshapeDelete) : copy.reshapeStart}</div>}
-          {activeAnnotation?.type === "polygon" && tool === "select" && <div className="polygon-tip">Roda do mouse amplia · nó + Delete remove em sequência · corpo + Delete apaga tudo</div>}
+          {activeAnnotation?.type === "polygon" && tool === "select" && <div className="polygon-tip">{copy.middlePan} · nó + Delete remove em sequência · corpo + Delete apaga tudo</div>}
           {tool === "sam" && <div className="sam-controls"><div><button className={samPromptMode === 1 ? "active positive" : ""} onClick={() => setSamPromptMode(1)}><CirclePlus size={15} /> Incluir</button><button className={samPromptMode === 0 ? "active negative" : ""} onClick={() => setSamPromptMode(0)}><CircleMinus size={15} /> Excluir</button></div><span>{samLoading ? <><LoaderCircle className="spin" size={14} /> Segmentando…</> : `${samPrompts.length} ponto${samPrompts.length === 1 ? "" : "s"}`}</span><div><button disabled={!samPrompts.length || samLoading} onClick={clearSam}>Limpar</button><button className="accept" disabled={samPreview.length < 6 || samLoading} onClick={acceptSamMask}><Check size={14} /> Aceitar máscara</button><button aria-label="Configurar SAM" onClick={openSamSettings}><Settings2 size={15} /></button></div></div>}
         </div></div></div>
         <div className="status"><div><button onClick={() => go(-1)} disabled={assets[0].id === current}><ChevronLeft size={16} /></button><span><b>{assets.findIndex((item) => item.id === current) + 1}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{annotationDrag ? `${copy.moving} (${annotationDrag.originals.length})` : selectionMarquee ? copy.selecting : transformDrag ? copy.transforming : reshapeDrawing ? copy.reshaping : selectedVertex ? `Nó selecionado — encaixe ${snapping ? "ativo" : "inativo"}` : polygonDraft.length ? `${polygonDraft.length / 2} ponto(s) — Delete desfaz na ordem de criação` : multiSelected.length > 1 ? `${multiSelected.length} ${copy.selectedObjects}` : currentAnnotations.length ? `${currentAnnotations.length} ${copy.imageAnnotations}` : copy.ready}</p><button><Keyboard size={15} /> {copy.shortcuts}</button></div>
@@ -791,9 +865,9 @@ export default function Home() {
       <aside className={`labels ${rightOpen ? "open" : ""}`}>
         <div className="drawer-head"><b>{copy.classes} · {copy.quality}</b><button onClick={() => setRightOpen(false)}><X size={19} /></button></div>
         <div className="tabs"><button className={!quality ? "active" : ""} onClick={() => setQuality(false)}>{copy.classes}</button><button className={quality ? "active" : ""} onClick={() => setQuality(true)}>{copy.quality} <b>{currentAnnotations.length ? 1 : 0}</b></button></div>
-        {!quality ? <><div className="label-help"><b>{copy.activeClass}</b><span>{copy.newShapesClass}</span></div><div className="label-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); return <div key={label.id} className={`label-row ${activeLabel === label.id ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="label-main" onClick={() => setActiveLabel(label.id)}><i style={{ background: label.color }} /><span>{label.name}</span><em>{currentAnnotations.filter((annotation) => annotation.label === label.id).length}</em><kbd>{label.key}</kbd></button><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
-          {addingLabel ? <div className="new-class"><input autoFocus placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><button onClick={addClass}>{copy.add}</button><button onClick={() => setAddingLabel(false)}>{copy.cancel}</button></div> : <button className="add-class" onClick={() => setAddingLabel(true)}><Plus size={15} /> {copy.newClass}</button>}
-          <div className="instances"><div><b>{copy.annotations} · {currentAnnotations.length}</b><MoreHorizontal size={16} /></div>{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); return <div key={annotation.id} className={`instance-row ${multiSelected.includes(annotation.id) ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
+        {!quality ? <><section className="label-creator"><div><Palette size={14} /><span><b>{copy.labelStudio}</b><small>{copy.labelStudioHint}</small></span></div><div className="label-create-row"><input ref={labelInputRef} aria-label={copy.className} placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><input className="label-color" type="color" aria-label={copy.labelColor} title={copy.labelColor} value={newLabelColor} onChange={(event) => setNewLabelColor(event.target.value)} /><button aria-label={copy.createLabel} title={copy.createLabel} disabled={!newLabel.trim()} onClick={addClass}><Plus size={15} /></button></div></section><div className="label-help"><b>{copy.activeClass}</b><span>{copy.newShapesClass}</span></div><div className="label-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); return <div key={label.id} className={`label-row ${activeLabel === label.id ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="label-main" onClick={() => setActiveLabel(label.id)}><i style={{ background: label.color }} /><span>{label.name}</span><em>{currentAnnotations.filter((annotation) => annotation.label === label.id).length}</em>{label.key ? <kbd>{label.key}</kbd> : <span />}</button><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
+          {selectedIds.length > 0 && <section className="batch-class"><div><Tags size={14} /><span><b>{selectedIds.length} {copy.batchSelection}</b><small>{copy.changeClass}</small></span></div><div><select aria-label={copy.changeClass} value={resolvedBatchLabel} onChange={(event) => setBatchLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select><button onClick={reclassifySelection}>{copy.applyClass}</button></div></section>}
+          <div className="instances"><div><b>{copy.annotations} · {currentAnnotations.length}</b><MoreHorizontal size={16} /></div>{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); return <div key={annotation.id} className={`instance-row ${multiSelected.includes(annotation.id) ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); setBatchLabel(annotation.label); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
         </> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>{copy.goodConsistency}</span></div><article className="warn"><b>!</b><div><strong>{copy.possibleOverlap}</strong><p>{copy.overlapText}</p></div></article><article><b>✓</b><div><strong>{copy.validClasses}</strong><p>{copy.validClassesText}</p></div></article><article><b>✓</b><div><strong>{copy.noEmpty}</strong><p>{copy.noEmptyText}</p></div></article><button onClick={() => { setQuality(false); setSelected(visibleAnnotations[0]?.id ?? null); setMultiSelected(visibleAnnotations[0] ? [visibleAnnotations[0].id] : []); }}>{copy.review}</button></div>}
         <div className="hint"><b>{activeAnnotation?.type === "polygon" ? copy.vectorEditing : copy.quickTip}</b><p>{activeAnnotation?.type === "polygon" ? copy.vectorHint : copy.shortcutHint}</p></div>
       </aside>
