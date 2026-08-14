@@ -37,11 +37,26 @@ const UNLABELED_ID = "unlabeled";
 const UNLABELED_COLOR = "#929a95";
 const unlabeledLabel = (name = "Sem label"): Label => ({ id: UNLABELED_ID, name, color: UNLABELED_COLOR, key: "" });
 
+function normalizeLabels(labels: Label[]) {
+  const usedIds = new Set<string>();
+  const usedKeys = new Set<string>();
+  return labels.map((label, index) => {
+    const baseId = typeof label.id === "string" && label.id.trim() ? label.id : `restored-label-${index + 1}`;
+    let id = baseId;
+    let suffix = 2;
+    while (usedIds.has(id)) { id = `${baseId}-restored-${suffix}`; suffix += 1; }
+    usedIds.add(id);
+    const key = label.key && !usedKeys.has(label.key) ? label.key : "";
+    if (key) usedKeys.add(key);
+    return { ...label, id, key };
+  });
+}
+
 function loadInitialLabels() {
   if (typeof window === "undefined") return startLabels;
   try {
     const storedLabels = JSON.parse(localStorage.getItem("visionlabel-labels") ?? "null");
-    const labels = Array.isArray(storedLabels) && storedLabels.length ? storedLabels as Label[] : startLabels;
+    const labels = normalizeLabels(Array.isArray(storedLabels) && storedLabels.length ? storedLabels as Label[] : startLabels);
     const storedAnnotations = JSON.parse(localStorage.getItem("visionlabel-annotations") ?? "null");
     const annotations = Array.isArray(storedAnnotations) ? storedAnnotations as Annotation[] : startAnnotations;
     const validIds = new Set(labels.map((label) => label.id));
@@ -247,7 +262,10 @@ export default function Home() {
 
   function makeId(prefix: string) {
     idCounter.current += 1;
-    return `${prefix}-${idCounter.current}`;
+    const randomPart = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+      ? crypto.randomUUID()
+      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
+    return `${prefix}-${randomPart}-${idCounter.current}`;
   }
 
   const showToast = useCallback((message: string) => {
