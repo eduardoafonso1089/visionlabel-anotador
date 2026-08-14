@@ -64,6 +64,35 @@ export function movePolygon(points: number[], dx: number, dy: number) {
   );
 }
 
+export function annotationsBounds(annotations: Annotation[]) {
+  const bounds = annotations.map(annotationBounds);
+  return {
+    x: Math.min(...bounds.map((item) => item.x)),
+    y: Math.min(...bounds.map((item) => item.y)),
+    width: Math.max(...bounds.map((item) => item.x + item.width)) - Math.min(...bounds.map((item) => item.x)),
+    height: Math.max(...bounds.map((item) => item.y + item.height)) - Math.min(...bounds.map((item) => item.y)),
+  };
+}
+
+export function boundedAnnotationDelta(annotations: Annotation[], dx: number, dy: number) {
+  if (!annotations.length) return { dx: 0, dy: 0 };
+  const bounds = annotationsBounds(annotations);
+  return {
+    dx: Math.max(-bounds.x, Math.min(EDITOR_WIDTH - bounds.x - bounds.width, dx)),
+    dy: Math.max(-bounds.y, Math.min(EDITOR_HEIGHT - bounds.y - bounds.height, dy)),
+  };
+}
+
+export function translateAnnotation(annotation: Annotation, dx: number, dy: number): Annotation {
+  if (annotation.type === "polygon") {
+    return {
+      ...annotation,
+      pts: (annotation.pts ?? []).map((coordinate, index) => coordinate + (index % 2 ? dy : dx)),
+    };
+  }
+  return { ...annotation, x: (annotation.x ?? 0) + dx, y: (annotation.y ?? 0) + dy };
+}
+
 export function polygonBounds(points: number[]) {
   const xs = points.filter((_, index) => index % 2 === 0);
   const ys = points.filter((_, index) => index % 2 === 1);
@@ -194,82 +223,122 @@ function ringArc(vertices: Array<[number, number]>, start: number, end: number) 
   return result;
 }
 
-function lineLength(points: Array<[number, number]>) {
-  return points.slice(1).reduce(
-    (sum, point, index) => sum + Math.hypot(point[0] - points[index][0], point[1] - points[index][1]),
-    0,
-  );
+export function pointInPolygon(point: { x: number; y: number }, points: number[]) {
+  let inside = false;
+  for (let index = 0, previous = points.length - 2; index < points.length; previous = index, index += 2) {
+    const xi = points[index]; const yi = points[index + 1];
+    const xj = points[previous]; const yj = points[previous + 1];
+    const crosses = yi > point.y !== yj > point.y &&
+      point.x < ((xj - xi) * (point.y - yi)) / (yj - yi || Number.EPSILON) + xi;
+    if (crosses) inside = !inside;
+  }
+  return inside;
 }
 
-export function reshapePolygon(points: number[], path: number[], snapDistance = 34) {
-  if (points.length < 6 || path.length < 4) return null;
-  const ring: Array<[number, number]> = [];
-  for (let index = 0; index < points.length; index += 2) ring.push([points[index], points[index + 1]]);
-  const rawPath: Array<[number, number]> = [];
-  for (let index = 0; index < path.length; index += 2) rawPath.push([path[index], path[index + 1]]);
+function segmentIntersection(
+  a: [number, number], b: [number, number],
+  c: [number, number], d: [number, number],
+) {
+  const abx = b[0] - a[0]; const aby = b[1] - a[1];
+  const cdx = d[0] - c[0]; const cdy = d[1] - c[1];
+  const denominator = abx * cdy - aby * cdx;
+  if (Math.abs(denominator) < 1e-8) return null;
+  const acx = c[0] - a[0]; const acy = c[1] - a[1];
+  const pathT = (acx * cdy - acy * cdx) / denominator;
+  const edgeT = (acx * aby - acy * abx) / denominator;
+  if (pathT < 0 || pathT > 1 || edgeT < 0 || edgeT > 1) return null;
+  return { x: a[0] + pathT * abx, y: a[1] + pathT * aby, pathT, edgeT };
+}
 
-  const endpointTargets = [rawPath[0], rawPath.at(-1)!].map(([x, y]) => ({ x, y }));
-  const snaps = endpointTargets.map((target) => {
-    let best = { edge: 0, x: 0, y: 0, t: 0, distance: Number.POSITIVE_INFINITY };
-    ring.forEach((vertex, edge) => {
-      const next = ring[(edge + 1) % ring.length];
-      const projection = segmentProjection(target, { x: vertex[0], y: vertex[1] }, { x: next[0], y: next[1] });
-      if (projection.distance < best.distance) best = { edge, ...projection };
-    });
-    return best;
-  });
-  if (snaps.some((snap) => snap.distance > snapDistance)) return null;
+export type ReshapeResult = {
+  points: number[] | null;
+  mode: "add" | "delete" | null;
+  reason: "mixed" | "crossings" | "direction" | null;
+};
+
+export function reshapePolygon(points: number[], path: number[]): ReshapeResult {
+  if (points.length < 6 || path.length < 6) return { points: null, mode: null, reason: "crossings" };
+  const ring: Array<[number, number]> = [];
+  const trace: Array<[number, number]> = [];
+  for (let index = 0; index < points.length; index += 2) ring.push([points[index], points[index + 1]]);
+  for (let index = 0; index < path.length; index += 2) trace.push([path[index], path[index + 1]]);
+
+  const startInside = pointInPolygon({ x: trace[0][0], y: trace[0][1] }, points);
+  const endInside = pointInPolygon({ x: trace.at(-1)![0], y: trace.at(-1)![1] }, points);
+  if (startInside !== endInside) return { points: null, mode: null, reason: "mixed" };
+  const mode: "add" | "delete" = startInside ? "add" : "delete";
+
+  const intersections: Array<{
+    pathSegment: number; pathT: number; edge: number; edgeT: number; point: [number, number];
+  }> = [];
+  for (let pathSegment = 0; pathSegment < trace.length - 1; pathSegment += 1) {
+    for (let edge = 0; edge < ring.length; edge += 1) {
+      const hit = segmentIntersection(trace[pathSegment], trace[pathSegment + 1], ring[edge], ring[(edge + 1) % ring.length]);
+      if (!hit) continue;
+      const duplicate = intersections.some((item) => Math.hypot(item.point[0] - hit.x, item.point[1] - hit.y) < 1);
+      if (!duplicate) intersections.push({ pathSegment, pathT: hit.pathT, edge, edgeT: hit.edgeT, point: [hit.x, hit.y] });
+    }
+  }
+  intersections.sort((a, b) => a.pathSegment + a.pathT - b.pathSegment - b.pathT);
+  if (intersections.length < 2) return { points: null, mode, reason: "crossings" };
+  const first = intersections[0];
+  const last = intersections.at(-1)!;
+  if (Math.hypot(first.point[0] - last.point[0], first.point[1] - last.point[1]) < 2) {
+    return { points: null, mode, reason: "crossings" };
+  }
+
+  const traceSection: Array<[number, number]> = [first.point];
+  for (let index = first.pathSegment + 1; index <= last.pathSegment; index += 1) traceSection.push(trace[index]);
+  traceSection.push(last.point);
+  const simplifiedTrace = openPathSimplify(traceSection, 2.2);
 
   const insertions = new Map<number, Array<{ endpoint: number; t: number; point: [number, number] }>>();
-  snaps.forEach((snap, endpoint) => {
-    const list = insertions.get(snap.edge) ?? [];
-    list.push({ endpoint, t: snap.t, point: [snap.x, snap.y] });
-    insertions.set(snap.edge, list);
+  [first, last].forEach((hit, endpoint) => {
+    const list = insertions.get(hit.edge) ?? [];
+    list.push({ endpoint, t: hit.edgeT, point: hit.point });
+    insertions.set(hit.edge, list);
   });
-
   const augmented: Array<[number, number]> = [];
-  const endpointIndices = [-1, -1];
   ring.forEach((vertex, edge) => {
     augmented.push(vertex);
     for (const insertion of (insertions.get(edge) ?? []).sort((a, b) => a.t - b.t)) {
-      if (insertion.t <= 0.015) endpointIndices[insertion.endpoint] = augmented.length - 1;
-      else if (insertion.t >= 0.985) {
-        // The endpoint is the first vertex of the next edge and is resolved after the ring is built.
-        endpointIndices[insertion.endpoint] = (edge + 1) % ring.length;
-      } else {
-        augmented.push(insertion.point);
-        endpointIndices[insertion.endpoint] = augmented.length - 1;
-      }
+      if (insertion.t > 0.001 && insertion.t < 0.999) augmented.push(insertion.point);
     }
   });
-
-  // Re-resolve endpoints by coordinates because earlier insertions shift later indices.
-  snaps.forEach((snap, endpoint) => {
-    endpointIndices[endpoint] = augmented.reduce((bestIndex, vertex, index) =>
-      Math.hypot(vertex[0] - snap.x, vertex[1] - snap.y) <
-      Math.hypot(augmented[bestIndex][0] - snap.x, augmented[bestIndex][1] - snap.y)
-        ? index
-        : bestIndex, 0);
-  });
+  const endpointIndices = [first.point, last.point].map((target) => augmented.reduce((best, vertex, index) =>
+    Math.hypot(vertex[0] - target[0], vertex[1] - target[1]) <
+    Math.hypot(augmented[best][0] - target[0], augmented[best][1] - target[1]) ? index : best, 0));
   const [startIndex, endIndex] = endpointIndices;
-  if (startIndex === endIndex) return null;
+  if (startIndex === endIndex) return { points: null, mode, reason: "crossings" };
+  simplifiedTrace[0] = augmented[startIndex];
+  simplifiedTrace[simplifiedTrace.length - 1] = augmented[endIndex];
 
-  const simplifiedPath = openPathSimplify(rawPath, 2.2);
-  simplifiedPath[0] = augmented[startIndex];
-  simplifiedPath[simplifiedPath.length - 1] = augmented[endIndex];
   const forward = ringArc(augmented, startIndex, endIndex);
   const backward = ringArc(augmented, endIndex, startIndex);
-  let result: Array<[number, number]>;
-  if (lineLength(forward) <= lineLength(backward)) {
-    result = [...simplifiedPath, ...backward.slice(1, -1)];
-  } else {
-    result = [...forward, ...simplifiedPath.slice(1, -1).reverse()];
-  }
-  const deduplicated = result.filter((point, index) => {
-    const previous = result[(index - 1 + result.length) % result.length];
+  const candidates = [
+    [...simplifiedTrace, ...backward.slice(1, -1)],
+    [...forward, ...simplifiedTrace.slice(1, -1).reverse()],
+  ].map((candidate) => candidate.filter((point, index) => {
+    const previous = candidate[(index - 1 + candidate.length) % candidate.length];
     return Math.hypot(point[0] - previous[0], point[1] - previous[1]) >= 1;
+  })).filter((candidate) => candidate.length >= 3);
+  if (!candidates.length) return { points: null, mode, reason: "crossings" };
+
+  const originalArea = polygonArea(points);
+  const minimumChange = Math.max(12, originalArea * 0.0001);
+  const directionalCandidates = candidates.filter((candidate) => {
+    const area = polygonArea(candidate.flat());
+    return mode === "add" ? area > originalArea + minimumChange : area < originalArea - minimumChange;
   });
-  return deduplicated.length >= 3 ? deduplicated.flat() : null;
+  if (!directionalCandidates.length) return { points: null, mode, reason: "direction" };
+  const selectedCandidate = directionalCandidates.reduce((best, candidate) => {
+    const candidateArea = polygonArea(candidate.flat());
+    const bestArea = polygonArea(best.flat());
+    return mode === "add"
+      ? candidateArea < bestArea ? candidate : best
+      : candidateArea > bestArea ? candidate : best;
+  });
+  return { points: selectedCandidate.flat(), mode, reason: null };
 }
 
 export function annotationBounds(annotation: Annotation) {
@@ -288,6 +357,15 @@ export function annotationBounds(annotation: Annotation) {
     width: 8,
     height: 8,
   };
+}
+
+export function annotationIntersectsRect(
+  annotation: Annotation,
+  rect: { x: number; y: number; width: number; height: number },
+) {
+  const bounds = annotationBounds(annotation);
+  return bounds.x <= rect.x + rect.width && bounds.x + bounds.width >= rect.x &&
+    bounds.y <= rect.y + rect.height && bounds.y + bounds.height >= rect.y;
 }
 
 export function polygonArea(points: number[]) {

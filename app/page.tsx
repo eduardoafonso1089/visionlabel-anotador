@@ -2,20 +2,22 @@
 
 import {
   Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
-  Cloud, Combine, Copy, Download, Eye, Hand, ImagePlus, Keyboard, Link2,
+  Cloud, Combine, Copy, Download, Eye, EyeOff, Hand, ImagePlus, Keyboard, Languages, Link2,
   ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine,
-  Pentagon, Plus, Redo2, RotateCcw, Scissors, Search, Settings2, Sparkles,
-  Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
+  Monitor, Moon, Pentagon, Plus, Redo2, RotateCcw, Scissors, Search, Settings2, Sparkles,
+  Sun, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
-  deletePolygonVertex, edgeMidpoints, insertPolygonVertex, movePolygon,
-  MIN_VERTEX_DISTANCE, pointsToSvg, polygonBounds, polygonCenter, reshapePolygon,
-  simplifyPolygon, snapPointToPolygons, splitPolygon, transformPolygon, unionPolygons,
-  updatePolygonVertex,
+  annotationIntersectsRect, boundedAnnotationDelta, deletePolygonVertex, edgeMidpoints,
+  insertPolygonVertex, movePolygon, MIN_VERTEX_DISTANCE, pointInPolygon, pointsToSvg,
+  polygonBounds, polygonCenter, reshapePolygon, simplifyPolygon, snapPointToPolygons,
+  splitPolygon, transformPolygon, translateAnnotation, unionPolygons, updatePolygonVertex,
 } from "./lib/geometry";
 import { exportCoco, exportProject, exportYoloZip } from "./lib/exporters";
+import { getCopy } from "./lib/i18n";
 import { requestSamMask } from "./lib/sam";
+import type { Language, ThemeMode } from "./lib/i18n";
 import type { Annotation, Asset, Label, SamPrompt, Tool } from "./lib/types";
 
 const demoAssets: Asset[] = [
@@ -40,8 +42,11 @@ const startAnnotations: Annotation[] = [
 
 const colors = ["#6c8cff", "#d987ff", "#26c6b6", "#ff8a65"];
 
-type PolygonDrag = { annotationId: string; startX: number; startY: number; points: number[] };
+type AnnotationDrag = { startX: number; startY: number; originals: Annotation[] };
 type VertexDrag = { annotationId: string; vertexIndex: number };
+type SelectionMarquee = {
+  startX: number; startY: number; currentX: number; currentY: number; additiveIds: string[];
+};
 type TransformDrag = {
   annotationId: string;
   kind: "scale" | "rotate";
@@ -65,12 +70,16 @@ export default function Home() {
   const [tool, setTool] = useState<Tool>("select");
   const [selected, setSelected] = useState<string | null>(null);
   const [multiSelected, setMultiSelected] = useState<string[]>([]);
+  const [hiddenAnnotations, setHiddenAnnotations] = useState<string[]>([]);
+  const [hiddenLabels, setHiddenLabels] = useState<string[]>([]);
   const [selectedVertex, setSelectedVertex] = useState<{ annotationId: string; vertexIndex: number } | null>(null);
-  const [polygonDrag, setPolygonDrag] = useState<PolygonDrag | null>(null);
+  const [annotationDrag, setAnnotationDrag] = useState<AnnotationDrag | null>(null);
+  const [selectionMarquee, setSelectionMarquee] = useState<SelectionMarquee | null>(null);
   const [vertexDrag, setVertexDrag] = useState<VertexDrag | null>(null);
   const [transformDrag, setTransformDrag] = useState<TransformDrag | null>(null);
   const [reshapeDraft, setReshapeDraft] = useState<number[]>([]);
   const [reshapeDrawing, setReshapeDrawing] = useState(false);
+  const [reshapeStartInside, setReshapeStartInside] = useState<boolean | null>(null);
   const [snapping, setSnapping] = useState(true);
   const [snapGuide, setSnapGuide] = useState<{ x: number; y: number } | null>(null);
   const [zoom, setZoom] = useState(92);
@@ -83,6 +92,18 @@ export default function Home() {
   const [addingLabel, setAddingLabel] = useState(false);
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
+  const [preferencesOpen, setPreferencesOpen] = useState(false);
+  const [preferencesTab, setPreferencesTab] = useState<"appearance" | "language">("appearance");
+  const [language, setLanguage] = useState<Language>(() => {
+    if (typeof window === "undefined") return "pt";
+    const stored = localStorage.getItem("visionlabel-language");
+    return stored === "en" || stored === "fr" || stored === "es" ? stored : "pt";
+  });
+  const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
+    if (typeof window === "undefined") return "system";
+    const stored = localStorage.getItem("visionlabel-theme");
+    return stored === "light" || stored === "dark" ? stored : "system";
+  });
   const [start, setStart] = useState<{ x: number; y: number } | null>(null);
   const [panStart, setPanStart] = useState<{ x: number; y: number; left: number; top: number } | null>(null);
   const [draft, setDraft] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
@@ -109,12 +130,19 @@ export default function Home() {
   const input = useRef<HTMLInputElement>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
+  const annotationDragRef = useRef<AnnotationDrag | null>(null);
+  const selectionMarqueeRef = useRef<SelectionMarquee | null>(null);
   const vertexDragRef = useRef<VertexDrag | null>(null);
   const transformDragRef = useRef<TransformDrag | null>(null);
+  const reshapeTargetRef = useRef<string | null>(null);
   const idCounter = useRef(0);
 
   const asset = assets.find((item) => item.id === current) ?? assets[0];
   const currentAnnotations = annotations.filter((annotation) => annotation.asset === current);
+  const visibleAnnotations = currentAnnotations.filter((annotation) =>
+    !hiddenAnnotations.includes(annotation.id) && !hiddenLabels.includes(annotation.label),
+  );
+  const copy = getCopy(language);
   const activeAnnotation = annotations.find((annotation) => annotation.id === selected);
   const activePolygonBounds = activeAnnotation?.type === "polygon" && (activeAnnotation.pts?.length ?? 0) >= 6
     ? polygonBounds(activeAnnotation.pts ?? [])
@@ -136,6 +164,13 @@ export default function Home() {
   const getLabel = useCallback((id: string) => labels.find((label) => label.id === id) ?? labels[0], [labels]);
   const completed = useMemo(() => new Set(annotations.map((annotation) => annotation.asset)).size, [annotations]);
   const remember = useCallback(() => { setHistory((items) => [...items.slice(-24), annotations]); setSaved(false); }, [annotations]);
+
+  useEffect(() => {
+    document.documentElement.dataset.theme = themeMode;
+    document.documentElement.lang = language === "pt" ? "pt-BR" : language;
+    localStorage.setItem("visionlabel-theme", themeMode);
+    localStorage.setItem("visionlabel-language", language);
+  }, [language, themeMode]);
 
   function makeId(prefix: string) {
     idCounter.current += 1;
@@ -208,6 +243,9 @@ export default function Home() {
       if (event.key === "Escape") {
         setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
         setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
+        annotationDragRef.current = null; setAnnotationDrag(null);
+        selectionMarqueeRef.current = null; setSelectionMarquee(null);
+        reshapeTargetRef.current = null; setReshapeStartInside(null);
         transformDragRef.current = null; setTransformDrag(null); setSnapGuide(null);
         setSamPrompts([]); setSamPreview([]);
         setSelected(null); setMultiSelected([]); setSelectedVertex(null);
@@ -230,6 +268,9 @@ export default function Home() {
   function resetDrafts() {
     setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
     setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
+    annotationDragRef.current = null; setAnnotationDrag(null);
+    selectionMarqueeRef.current = null; setSelectionMarquee(null);
+    reshapeTargetRef.current = null; setReshapeStartInside(null);
     transformDragRef.current = null; setTransformDrag(null); setSnapGuide(null); clearSam();
   }
 
@@ -271,17 +312,29 @@ export default function Home() {
   function canvasPointerDown(event: React.PointerEvent<SVGSVGElement>) {
     if (event.button !== 0) return;
     const point = editorPoint(event.clientX, event.clientY);
-    if (tool === "select") { setSelected(null); setMultiSelected([]); setSelectedVertex(null); return; }
+    if (tool === "select") {
+      const marquee: SelectionMarquee = {
+        startX: point.x, startY: point.y, currentX: point.x, currentY: point.y,
+        additiveIds: event.shiftKey ? [...multiSelected] : [],
+      };
+      selectionMarqueeRef.current = marquee; setSelectionMarquee(marquee); setSelectedVertex(null); capture(event.pointerId); return;
+    }
     if (tool === "pan") {
       const scroller = scrollRef.current;
       if (scroller) { setPanStart({ x: event.clientX, y: event.clientY, left: scroller.scrollLeft, top: scroller.scrollTop }); capture(event.pointerId); }
       return;
     }
     if (tool === "box") { setStart(point); setDraft({ ...point, w: 0, h: 0 }); capture(event.pointerId); }
-    if (tool === "polygon") setPolygonDraft((points) => [...points, point.x, point.y]);
+    if (tool === "polygon") {
+      const closeToFirst = polygonDraft.length >= 6 &&
+        Math.hypot(point.x - polygonDraft[0], point.y - polygonDraft[1]) <= 16;
+      if (closeToFirst) finishPolygon();
+      else setPolygonDraft((points) => [...points, point.x, point.y]);
+    }
     if (tool === "freehand" && !freehandDrawing) { setFreehandDraft([point.x, point.y]); setFreehandDrawing(true); }
-    if (tool === "reshape" && activeAnnotation?.type === "polygon" && !reshapeDrawing) {
-      setReshapeDraft([point.x, point.y]); setReshapeDrawing(true);
+    if (tool === "reshape" && activeAnnotation?.type === "polygon") {
+      if (reshapeDrawing) finishReshape(point);
+      else beginReshape(point, activeAnnotation.id);
     }
     if (tool === "point") {
       remember(); const id = makeId("annotation");
@@ -297,13 +350,15 @@ export default function Home() {
 
   function canvasPointerMove(event: React.PointerEvent<SVGSVGElement>) {
     const point = editorPoint(event.clientX, event.clientY);
-    if (polygonDrag) {
-      setAnnotations((items) => items.map((annotation) => annotation.id === polygonDrag.annotationId ? { ...annotation, pts: movePolygon(polygonDrag.points, point.x - polygonDrag.startX, point.y - polygonDrag.startY) } : annotation)); setSaved(false); return;
+    const activeMarquee = selectionMarqueeRef.current;
+    if (activeMarquee) {
+      const next = { ...activeMarquee, currentX: point.x, currentY: point.y };
+      selectionMarqueeRef.current = next; setSelectionMarquee(next); return;
     }
     const activeVertexDrag = vertexDragRef.current ?? vertexDrag;
     if (activeVertexDrag) {
       const target = snapping
-        ? snapPointToPolygons(point, currentAnnotations, activeVertexDrag.annotationId)
+        ? snapPointToPolygons(point, visibleAnnotations, activeVertexDrag.annotationId)
         : { ...point, snapped: false };
       setSnapGuide(target.snapped ? { x: target.x, y: target.y } : null);
       setAnnotations((items) => items.map((annotation) => annotation.id === activeVertexDrag.annotationId ? { ...annotation, pts: updatePolygonVertex(annotation.pts ?? [], activeVertexDrag.vertexIndex, target.x, target.y) } : annotation)); setSaved(false); return;
@@ -329,7 +384,8 @@ export default function Home() {
   }
 
   function canvasPointerUp() {
-    if (polygonDrag || vertexDragRef.current || vertexDrag) { vertexDragRef.current = null; setPolygonDrag(null); setVertexDrag(null); setSnapGuide(null); return; }
+    if (selectionMarqueeRef.current) { finishSelectionMarquee(); return; }
+    if (vertexDragRef.current || vertexDrag) { vertexDragRef.current = null; setVertexDrag(null); setSnapGuide(null); return; }
     if (tool === "pan") { setPanStart(null); return; }
     if (tool === "freehand") return;
     if (tool === "reshape") return;
@@ -348,24 +404,56 @@ export default function Home() {
     setFreehandDraft([]); setSelected(id); setMultiSelected([id]); showToast("Polígono criado. A mão livre continua ativa.");
   }
 
-  function finishFreehandWithRightClick(event: React.MouseEvent<SVGSVGElement>) {
+  function finishDrawingWithRightClick(event: React.MouseEvent<SVGSVGElement>) {
     event.preventDefault();
+    if (tool === "polygon" && polygonDraft.length >= 6) finishPolygon();
     if (tool === "freehand" && freehandDrawing) finishFreehand();
-    if (tool === "reshape" && reshapeDrawing) finishReshape();
   }
 
-  function finishReshape() {
-    setReshapeDrawing(false);
-    if (activeAnnotation?.type !== "polygon" || reshapeDraft.length < 4) { setReshapeDraft([]); return; }
-    const reshaped = reshapePolygon(activeAnnotation.pts ?? [], reshapeDraft);
-    setReshapeDraft([]);
-    if (!reshaped) {
-      showToast("Comece e termine o traço sobre duas bordas diferentes do polígono.");
+  function beginReshape(point: { x: number; y: number }, annotationId: string) {
+    const annotation = annotations.find((item) => item.id === annotationId);
+    if (annotation?.type !== "polygon") return;
+    reshapeTargetRef.current = annotationId;
+    setReshapeDraft([point.x, point.y]); setReshapeDrawing(true);
+    setReshapeStartInside(pointInPolygon(point, annotation.pts ?? []));
+  }
+
+  function finishReshape(endPoint: { x: number; y: number }) {
+    const targetId = reshapeTargetRef.current;
+    const annotation = annotations.find((item) => item.id === targetId);
+    const path = [...reshapeDraft, endPoint.x, endPoint.y];
+    setReshapeDrawing(false); setReshapeDraft([]); setReshapeStartInside(null); reshapeTargetRef.current = null;
+    if (annotation?.type !== "polygon" || path.length < 6) return;
+    const result = reshapePolygon(annotation.pts ?? [], path);
+    if (!result.points) {
+      if (result.reason === "mixed") showToast("Operação inválida: comece e termine ambos dentro ou ambos fora do polígono.");
+      else if (result.reason === "direction") showToast(result.mode === "add" ? "O traço precisa sair do polígono para adicionar área." : "O traço precisa atravessar o polígono para remover área.");
+      else showToast("O traço precisa cruzar a borda do polígono duas vezes.");
       return;
     }
     remember();
-    setAnnotations((items) => items.map((item) => item.id === activeAnnotation.id ? { ...item, pts: reshaped } : item));
-    setSelectedVertex(null); showToast("Borda remodelada. A ferramenta continua ativa.");
+    setAnnotations((items) => items.map((item) => item.id === annotation.id ? { ...item, pts: result.points! } : item));
+    setSelectedVertex(null);
+    showToast(result.mode === "add" ? "Área adicionada ao polígono." : "Área removida do polígono.");
+  }
+
+  function finishSelectionMarquee() {
+    const marquee = selectionMarqueeRef.current;
+    selectionMarqueeRef.current = null; setSelectionMarquee(null);
+    if (!marquee) return;
+    const rect = {
+      x: Math.min(marquee.startX, marquee.currentX),
+      y: Math.min(marquee.startY, marquee.currentY),
+      width: Math.abs(marquee.currentX - marquee.startX),
+      height: Math.abs(marquee.currentY - marquee.startY),
+    };
+    if (rect.width < 4 && rect.height < 4) {
+      const next = marquee.additiveIds;
+      setMultiSelected(next); setSelected(next.at(-1) ?? null); return;
+    }
+    const hits = visibleAnnotations.filter((annotation) => annotationIntersectsRect(annotation, rect)).map((annotation) => annotation.id);
+    const next = Array.from(new Set([...marquee.additiveIds, ...hits]));
+    setMultiSelected(next); setSelected(next.at(-1) ?? null);
   }
 
   function finishSplit() {
@@ -381,12 +469,15 @@ export default function Home() {
     setSelected(created[0].id); setMultiSelected(created.map((item) => item.id)); showToast(`Polígono dividido em ${created.length} partes.`);
   }
 
-  function beginPolygonDrag(event: React.PointerEvent, annotation: Annotation) {
+  function beginAnnotationDrag(event: React.PointerEvent<SVGElement>, annotation: Annotation) {
     if (tool === "reshape") {
       event.preventDefault(); event.stopPropagation();
       const point = editorPoint(event.clientX, event.clientY);
-      setSelected(annotation.id); setMultiSelected([annotation.id]); setSelectedVertex(null);
-      setReshapeDraft([point.x, point.y]); setReshapeDrawing(true);
+      if (reshapeDrawing) finishReshape(point);
+      else {
+        setSelected(annotation.id); setMultiSelected([annotation.id]); setSelectedVertex(null);
+        beginReshape(point, annotation.id);
+      }
       return;
     }
     if (tool === "transform") {
@@ -395,11 +486,36 @@ export default function Home() {
       return;
     }
     if (tool !== "select") return;
-    event.stopPropagation();
+    event.preventDefault(); event.stopPropagation();
     if (event.shiftKey) { toggleMultiSelection(annotation.id); return; }
     const point = editorPoint(event.clientX, event.clientY);
-    remember(); setSelected(annotation.id); setMultiSelected([annotation.id]); setSelectedVertex(null);
-    setPolygonDrag({ annotationId: annotation.id, startX: point.x, startY: point.y, points: [...(annotation.pts ?? [])] }); capture(event.pointerId);
+    const ids = multiSelected.includes(annotation.id) && multiSelected.length > 1 ? multiSelected : [annotation.id];
+    const originals = annotations.filter((item) => ids.includes(item.id));
+    const drag: AnnotationDrag = { startX: point.x, startY: point.y, originals };
+    remember(); setSelected(annotation.id); setMultiSelected(ids); setSelectedVertex(null);
+    annotationDragRef.current = drag; setAnnotationDrag(drag);
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { capture(event.pointerId); }
+  }
+
+  function moveAnnotationPointer(event: React.PointerEvent<SVGElement>) {
+    const drag = annotationDragRef.current;
+    if (!drag) return;
+    event.preventDefault(); event.stopPropagation();
+    const point = editorPoint(event.clientX, event.clientY);
+    const delta = boundedAnnotationDelta(drag.originals, point.x - drag.startX, point.y - drag.startY);
+    const originals = new Map(drag.originals.map((annotation) => [annotation.id, annotation]));
+    setAnnotations((items) => items.map((item) => {
+      const original = originals.get(item.id);
+      return original ? translateAnnotation(original, delta.dx, delta.dy) : item;
+    }));
+    setSaved(false);
+  }
+
+  function finishAnnotationPointer(event: React.PointerEvent<SVGElement>) {
+    if (!annotationDragRef.current) return;
+    event.preventDefault(); event.stopPropagation();
+    try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* no-op */ }
+    annotationDragRef.current = null; setAnnotationDrag(null);
   }
 
   function beginTransform(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, kind: "scale" | "rotate") {
@@ -492,13 +608,6 @@ export default function Home() {
     setSelected(annotation.id); setMultiSelected([annotation.id]); setSelectedVertex(drag); captureVertexPointer(event, drag);
   }
 
-  function selectAnnotation(event: React.PointerEvent, annotation: Annotation) {
-    if (tool !== "select") return;
-    event.stopPropagation();
-    if (event.shiftKey && annotation.type === "polygon") { toggleMultiSelection(annotation.id); return; }
-    setSelected(annotation.id); setMultiSelected([annotation.id]); setSelectedVertex(null);
-  }
-
   function toggleMultiSelection(id: string) {
     setMultiSelected((items) => {
       const base = selected && !items.includes(selected) ? [...items, selected] : items;
@@ -506,6 +615,33 @@ export default function Home() {
       setSelected(next.at(-1) ?? null); return next;
     });
     setSelectedVertex(null);
+  }
+
+  function toggleAnnotationVisibility(id: string) {
+    const annotation = annotations.find((item) => item.id === id);
+    if (annotation && hiddenLabels.includes(annotation.label)) {
+      setHiddenLabels((items) => items.filter((item) => item !== annotation.label));
+      setHiddenAnnotations((items) => items.filter((item) => item !== id));
+      return;
+    }
+    const willHide = !hiddenAnnotations.includes(id);
+    setHiddenAnnotations((items) => willHide ? [...items, id] : items.filter((item) => item !== id));
+    if (willHide) {
+      setMultiSelected((items) => items.filter((item) => item !== id));
+      if (selected === id) setSelected(null);
+      if (selectedVertex?.annotationId === id) setSelectedVertex(null);
+    }
+  }
+
+  function toggleLabelVisibility(id: string) {
+    const willHide = !hiddenLabels.includes(id);
+    setHiddenLabels((items) => willHide ? [...items, id] : items.filter((item) => item !== id));
+    if (willHide) {
+      const hiddenIds = currentAnnotations.filter((annotation) => annotation.label === id).map((annotation) => annotation.id);
+      setMultiSelected((items) => items.filter((item) => !hiddenIds.includes(item)));
+      if (selected && hiddenIds.includes(selected)) setSelected(null);
+      if (selectedVertex && hiddenIds.includes(selectedVertex.annotationId)) setSelectedVertex(null);
+    }
   }
 
   function simplifySelected() {
@@ -588,27 +724,27 @@ export default function Home() {
 
   return <main className="shell">
     <header className="topbar">
-      <div className="brand-side"><button className="mobile" onClick={() => setLeftOpen(true)} aria-label="Abrir imagens"><Menu size={19} /></button><div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i /><button className="project"><em />Ervas daninhas — Talhão 07 <ChevronDown size={14} /></button></div>
-      <div className="head-actions"><span className={`save ${saved ? "done" : ""}`}><Cloud size={14} />{saved ? "Salvo neste dispositivo" : "Salvando…"}</span><button className={`sam-connection ${samEndpoint ? "connected" : ""}`} onClick={openSamSettings}><Link2 size={14} />{samEndpoint ? "SAM local ativo" : "Ativar SAM local"}</button><div className="export"><button className="export-main" disabled={exporting} onClick={() => setExportOpen(!exportOpen)}>{exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} Exportar <ChevronDown size={13} /></button>{exportOpen && <div className="export-pop"><p>Formato de exportação</p><button onClick={() => void exportData("coco")}><b>COCO JSON</b><span>caixas, polígonos e pontos-chave</span></button><button onClick={() => void exportData("yolo")}><b>YOLO ZIP</b><span>um label por imagem + data.yaml</span></button><button onClick={() => void exportData("project")}><b>Projeto VisionLabel</b><span>backup editável</span></button></div>}</div><button className="avatar">EA</button><button className="mobile" onClick={() => setRightOpen(true)} aria-label="Abrir classes"><MoreHorizontal size={19} /></button></div>
+      <div className="brand-side"><button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button><div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i /><button className="project"><em />Ervas daninhas — Talhão 07 <ChevronDown size={14} /></button></div>
+      <div className="head-actions"><span className={`save ${saved ? "done" : ""}`}><Cloud size={14} />{saved ? copy.saved : copy.saving}</span><button className={`sam-connection ${samEndpoint ? "connected" : ""}`} onClick={openSamSettings}><Link2 size={14} />{samEndpoint ? copy.samActive : copy.activateSam}</button><div className="export"><button className="export-main" disabled={exporting} onClick={() => setExportOpen(!exportOpen)}>{exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {copy.export} <ChevronDown size={13} /></button>{exportOpen && <div className="export-pop"><p>{copy.exportFormat}</p><button onClick={() => void exportData("coco")}><b>COCO JSON</b><span>{copy.cocoDesc}</span></button><button onClick={() => void exportData("yolo")}><b>YOLO ZIP</b><span>{copy.yoloDesc}</span></button><button onClick={() => void exportData("project")}><b>VisionLabel</b><span>{copy.projectBackup}</span></button></div>}</div><button className="preferences-button" title={copy.preferences} aria-label={copy.preferences} onClick={() => setPreferencesOpen(true)}><Languages size={17} /></button><button className="avatar">EA</button><button className="mobile" onClick={() => setRightOpen(true)} aria-label={copy.classes}><MoreHorizontal size={19} /></button></div>
     </header>
 
     <div className="workspace">
       <aside className={`assets ${leftOpen ? "open" : ""}`}>
-        <div className="drawer-head"><b>Imagens</b><button onClick={() => setLeftOpen(false)}><X size={19} /></button></div>
-        <div className="aside-title"><span>IMAGENS <b>{assets.length}</b></span><button onClick={() => input.current?.click()}><Plus size={16} /></button></div>
+        <div className="drawer-head"><b>{copy.images}</b><button onClick={() => setLeftOpen(false)}><X size={19} /></button></div>
+        <div className="aside-title"><span>{copy.images} <b>{assets.length}</b></span><button onClick={() => input.current?.click()}><Plus size={16} /></button></div>
         <input hidden ref={input} type="file" accept="image/*" multiple onChange={(event) => files(event.target.files)} />
-        <button className="import" onClick={() => input.current?.click()}><ImagePlus size={16} /> Importar imagens</button>
-        <label className="search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder="Buscar imagem…" /></label>
-        <div className="progress"><div><span>Progresso</span><b>{completed} de {assets.length}</b></div><i><em style={{ width: `${completed / assets.length * 100}%` }} /></i></div>
-        <div className="asset-list">{assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item, index) => { const count = annotations.filter((annotation) => annotation.asset === item.id).length; return <button key={item.id} className={current === item.id ? "active" : ""} onClick={() => chooseImage(item.id)}><div className="thumb" style={{ backgroundImage: `url(${item.src})` }}><span>{String(index + 1).padStart(2, "0")}</span>{count > 0 && <b>{count}</b>}</div><div><strong>{item.name}</strong><small>{item.width && item.height ? `${item.width} × ${item.height}` : "Imagem local"}</small></div><i className={count ? "checked" : ""}>{count ? "✓" : ""}</i></button>; })}</div>
-        <div className="privacy"><Cloud size={14} /> Suas imagens ficam no navegador.</div>
+        <button className="import" onClick={() => input.current?.click()}><ImagePlus size={16} /> {copy.importImages}</button>
+        <label className="search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={copy.searchImage} /></label>
+        <div className="progress"><div><span>{copy.progress}</span><b>{completed} {copy.of} {assets.length}</b></div><i><em style={{ width: `${completed / assets.length * 100}%` }} /></i></div>
+        <div className="asset-list">{assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item, index) => { const count = annotations.filter((annotation) => annotation.asset === item.id).length; return <button key={item.id} className={current === item.id ? "active" : ""} onClick={() => chooseImage(item.id)}><div className="thumb" style={{ backgroundImage: `url(${item.src})` }}><span>{String(index + 1).padStart(2, "0")}</span>{count > 0 && <b>{count}</b>}</div><div><strong>{item.name}</strong><small>{item.width && item.height ? `${item.width} × ${item.height}` : copy.localImage}</small></div><i className={count ? "checked" : ""}>{count ? "✓" : ""}</i></button>; })}</div>
+        <div className="privacy"><Cloud size={14} /> {copy.privacy}</div>
       </aside>
 
       <section className="editor">
         <div className="tools">
-          <div><ToolButton title="Selecionar e mover (V)" keyHint="V" active={tool === "select"} onClick={() => setTool("select")}><MousePointer2 size={18} /></ToolButton><ToolButton title="Mover canvas (H)" keyHint="H" active={tool === "pan"} onClick={() => setTool("pan")}><Hand size={18} /></ToolButton></div><i />
-          <div><ToolButton title="Caixa (B)" keyHint="B" active={tool === "box"} onClick={() => setTool("box")}><Box size={18} /></ToolButton><ToolButton title="Polígono por pontos (P)" keyHint="P" active={tool === "polygon"} onClick={() => setTool("polygon")}><Pentagon size={18} /></ToolButton><ToolButton title="Polígono à mão livre (F)" keyHint="F" active={tool === "freehand"} onClick={() => setTool("freehand")}><PenLine size={18} /></ToolButton><ToolButton title="Ponto-chave (K)" keyHint="K" active={tool === "point"} onClick={() => setTool("point")}><span className="point-icon" /></ToolButton><ToolButton title="Segmentar com SAM (S)" keyHint="S" active={tool === "sam"} onClick={activateSam}><WandSparkles size={18} /></ToolButton></div><i />
-          <div className="edit-tools"><ToolButton title="Simplificar polígono" disabled={activeAnnotation?.type !== "polygon"} onClick={simplifySelected}><ListRestart size={18} /></ToolButton><ToolButton title="Duplicar polígono" disabled={activeAnnotation?.type !== "polygon"} onClick={duplicateSelected}><Copy size={17} /></ToolButton><ToolButton title="Unir polígonos selecionados" disabled={selectedPolygons.length < 2} onClick={mergeSelected}><Combine size={18} /></ToolButton><ToolButton title="Cortar polígono com linha" disabled={activeAnnotation?.type !== "polygon"} active={tool === "split"} onClick={() => setTool("split")}><Scissors size={17} /></ToolButton><ToolButton title="Rotacionar e redimensionar (T)" keyHint="T" disabled={activeAnnotation?.type !== "polygon"} active={tool === "transform"} onClick={() => setTool("transform")}><Maximize2 size={17} /></ToolButton><ToolButton title="Remodelar borda à mão livre (R)" keyHint="R" disabled={activeAnnotation?.type !== "polygon"} active={tool === "reshape"} onClick={() => setTool("reshape")}><PenTool size={17} /></ToolButton><ToolButton title={snapping ? "Encaixe em vértices e arestas ativo" : "Ativar encaixe em vértices e arestas"} active={snapping} onClick={() => { setSnapping((value) => !value); setSnapGuide(null); }}><Magnet size={17} /></ToolButton></div><i />
+          <div><ToolButton title={copy.select} keyHint="V" active={tool === "select"} onClick={() => setTool("select")}><MousePointer2 size={18} /></ToolButton><ToolButton title={copy.pan} keyHint="H" active={tool === "pan"} onClick={() => setTool("pan")}><Hand size={18} /></ToolButton></div><i />
+          <div><ToolButton title={copy.box} keyHint="B" active={tool === "box"} onClick={() => setTool("box")}><Box size={18} /></ToolButton><ToolButton title={copy.polygon} keyHint="P" active={tool === "polygon"} onClick={() => setTool("polygon")}><Pentagon size={18} /></ToolButton><ToolButton title={copy.freehand} keyHint="F" active={tool === "freehand"} onClick={() => setTool("freehand")}><PenLine size={18} /></ToolButton><ToolButton title={copy.point} keyHint="K" active={tool === "point"} onClick={() => setTool("point")}><span className="point-icon" /></ToolButton><ToolButton title={copy.sam} keyHint="S" active={tool === "sam"} onClick={activateSam}><WandSparkles size={18} /></ToolButton></div><i />
+          <div className="edit-tools"><ToolButton title={copy.simplify} disabled={activeAnnotation?.type !== "polygon"} onClick={simplifySelected}><ListRestart size={18} /></ToolButton><ToolButton title={copy.duplicate} disabled={activeAnnotation?.type !== "polygon"} onClick={duplicateSelected}><Copy size={17} /></ToolButton><ToolButton title={copy.merge} disabled={selectedPolygons.length < 2} onClick={mergeSelected}><Combine size={18} /></ToolButton><ToolButton title={copy.split} disabled={activeAnnotation?.type !== "polygon"} active={tool === "split"} onClick={() => setTool("split")}><Scissors size={17} /></ToolButton><ToolButton title={copy.transform} keyHint="T" disabled={activeAnnotation?.type !== "polygon"} active={tool === "transform"} onClick={() => setTool("transform")}><Maximize2 size={17} /></ToolButton><ToolButton title={copy.reshape} keyHint="R" disabled={activeAnnotation?.type !== "polygon"} active={tool === "reshape"} onClick={() => setTool("reshape")}><PenTool size={17} /></ToolButton><ToolButton title={snapping ? copy.snapOn : copy.snapOff} active={snapping} onClick={() => { setSnapping((value) => !value); setSnapGuide(null); }}><Magnet size={17} /></ToolButton></div><i />
           <div><ToolButton title="Desfazer" disabled={!history.length} onClick={undo}><Undo2 size={18} /></ToolButton><ToolButton title="Refazer" disabled><Redo2 size={18} /></ToolButton><ToolButton title={selectedVertex ? "Excluir nó e avançar na sequência" : polygonDraft.length ? "Remover último ponto criado" : "Excluir forma inteira"} disabled={!selected && !polygonDraft.length} onClick={deleteSelection}><Trash2 size={18} /></ToolButton></div><span className="spacer" />
           <div className="zoom"><button onClick={() => setZoom((value) => Math.max(30, value - 10))}><ZoomOut size={15} /></button><span>{zoom}%</span><button onClick={() => setZoom((value) => Math.min(400, value + 10))}><ZoomIn size={15} /></button></div><ToolButton title="Redefinir zoom" onClick={() => setZoom(92)}><RotateCcw size={16} /></ToolButton>
         </div>
@@ -616,14 +752,15 @@ export default function Home() {
         <div className={`stage ${tool}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}><div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img crossOrigin="anonymous" src={asset.src} alt={`Imagem para anotação: ${asset.name}`} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (asset.width !== image.naturalWidth || asset.height !== image.naturalHeight) setAssets((items) => items.map((item) => item.id === asset.id ? { ...item, width: image.naturalWidth, height: image.naturalHeight } : item)); }} />
-          <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onContextMenu={finishFreehandWithRightClick} onDoubleClick={() => tool === "polygon" && finishPolygon()}>
-            {currentAnnotations.map((annotation) => {
+          <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => tool === "polygon" && finishPolygon()}>
+            {visibleAnnotations.map((annotation) => {
               const label = getLabel(annotation.label);
               const isSelected = multiSelected.includes(annotation.id);
-              if (annotation.type === "box") return <g key={annotation.id} onPointerDown={(event) => selectAnnotation(event, annotation)}><rect x={annotation.x} y={annotation.y} width={annotation.w} height={annotation.h} fill={`${label.color}28`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} /><g transform={`translate(${annotation.x},${(annotation.y ?? 0) - 31})`}><rect width={Math.max(100, label.name.length * 10 + 25)} height="31" rx="5" fill={label.color} /><text x="12" y="21" fontSize="16" fontWeight="700" fill="#112018">{label.name}</text></g></g>;
-              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={isSelected && tool === "select" ? "movable-polygon" : ""} onPointerDown={(event) => beginPolygonDrag(event, annotation)} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} />{tool === "select" && isSelected && annotation.id === selected && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r="2.75" />)}{tool === "select" && isSelected && annotation.id === selected && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r="8" fill="#fff" stroke={label.color} strokeWidth="4" /> : null)}</g>;
-              return <g key={annotation.id} onPointerDown={(event) => selectAnnotation(event, annotation)}><circle cx={annotation.x} cy={annotation.y} r={isSelected ? 17 : 13} fill="#fff" stroke={label.color} strokeWidth="6" /><circle cx={annotation.x} cy={annotation.y} r="4" fill={label.color} /></g>;
+              if (annotation.type === "box") return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><rect x={annotation.x} y={annotation.y} width={annotation.w} height={annotation.h} fill={`${label.color}28`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} /><g transform={`translate(${annotation.x},${(annotation.y ?? 0) - 31})`}><rect width={Math.max(100, label.name.length * 10 + 25)} height="31" rx="5" fill={label.color} /><text x="12" y="21" fontSize="16" fontWeight="700" fill="#112018">{label.name}</text></g></g>;
+              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={tool === "select" ? "movable-annotation" : ""} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? 5 : 3} />{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r="2.75" />)}{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r="8" fill="#fff" stroke={label.color} strokeWidth="4" /> : null)}</g>;
+              return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><circle cx={annotation.x} cy={annotation.y} r={isSelected ? 17 : 13} fill="#fff" stroke={label.color} strokeWidth="6" /><circle cx={annotation.x} cy={annotation.y} r="4" fill={label.color} /></g>;
             })}
+            {selectionMarquee && <rect className="selection-marquee" x={Math.min(selectionMarquee.startX, selectionMarquee.currentX)} y={Math.min(selectionMarquee.startY, selectionMarquee.currentY)} width={Math.abs(selectionMarquee.currentX - selectionMarquee.startX)} height={Math.abs(selectionMarquee.currentY - selectionMarquee.startY)} />}
             {tool === "transform" && activeAnnotation?.type === "polygon" && activePolygonBounds && activePolygonCenter && <g className="transform-overlay">
               <rect x={activePolygonBounds.x} y={activePolygonBounds.y} width={activePolygonBounds.width} height={activePolygonBounds.height} />
               <line x1={activePolygonCenter.x} y1={transformRotationAnchorY} x2={activePolygonCenter.x} y2={transformRotationY} />
@@ -632,7 +769,7 @@ export default function Home() {
               <circle className="transform-center" cx={activePolygonCenter.x} cy={activePolygonCenter.y} r="5" />
             </g>}
             {draft && <rect x={draft.x} y={draft.y} width={draft.w} height={draft.h} fill={`${getLabel(activeLabel).color}25`} stroke={getLabel(activeLabel).color} strokeWidth="3" strokeDasharray="9 7" />}
-            {polygonDraft.length > 1 && <g><polyline points={pointsToSvg(polygonDraft)} fill={`${getLabel(activeLabel).color}20`} stroke={getLabel(activeLabel).color} strokeWidth="3" strokeDasharray="9 7" />{polygonDraft.map((coordinate, index, points) => index % 2 === 0 ? <circle key={index} cx={coordinate} cy={points[index + 1]} r="6" fill={getLabel(activeLabel).color} stroke="#fff" strokeWidth="2" /> : null)}</g>}
+            {polygonDraft.length > 1 && <g><polyline points={pointsToSvg(polygonDraft)} fill={`${getLabel(activeLabel).color}20`} stroke={getLabel(activeLabel).color} strokeWidth="3" strokeDasharray="9 7" />{polygonDraft.map((coordinate, index, points) => index % 2 === 0 ? <circle className={index === 0 && polygonDraft.length >= 6 ? "polygon-close-point" : ""} key={index} cx={coordinate} cy={points[index + 1]} r={index === 0 && polygonDraft.length >= 6 ? 9 : 6} fill={getLabel(activeLabel).color} stroke="#fff" strokeWidth="2" /> : null)}</g>}
             {freehandDraft.length > 1 && <polyline className="freehand-line" points={pointsToSvg(freehandDraft)} fill={`${getLabel(activeLabel).color}22`} stroke={getLabel(activeLabel).color} strokeWidth="4" />}
             {reshapeDraft.length > 1 && <g><polyline className="reshape-line" points={pointsToSvg(reshapeDraft)} />{reshapeDraft.length >= 4 && <><circle className="reshape-endpoint" cx={reshapeDraft[0]} cy={reshapeDraft[1]} r="7" /><circle className="reshape-endpoint" cx={reshapeDraft.at(-2)} cy={reshapeDraft.at(-1)} r="7" /></>}</g>}
             {splitStart && splitEnd && <line className="split-line" x1={splitStart.x} y1={splitStart.y} x2={splitEnd.x} y2={splitEnd.y} />}
@@ -640,29 +777,30 @@ export default function Home() {
             {samPreview.length >= 6 && <polygon className="sam-mask-preview" points={pointsToSvg(samPreview)} fill={`${getLabel(activeLabel).color}52`} stroke={getLabel(activeLabel).color} strokeWidth="4" strokeDasharray="10 6" />}
             {samPrompts.map((prompt, index) => <g key={index} className={`sam-prompt ${prompt.label ? "positive" : "negative"}`}><circle cx={prompt.x} cy={prompt.y} r="13" /><line x1={prompt.x - 6} y1={prompt.y} x2={prompt.x + 6} y2={prompt.y} />{prompt.label === 1 && <line x1={prompt.x} y1={prompt.y - 6} x2={prompt.x} y2={prompt.y + 6} />}</g>)}
           </svg>
-          {tool === "polygon" && polygonDraft.length > 0 && <div className="tip"><kbd>Enter</kbd> concluir · <kbd>Esc</kbd> cancelar</div>}
-          {tool === "freehand" && <div className="tip">{freehandDrawing ? <>Mova o mouse pelo contorno · <kbd>botão direito</kbd> fecha o polígono</> : <><kbd>clique esquerdo</kbd> inicia sem precisar manter pressionado</>}</div>}
-          {tool === "split" && <div className="tip">Arraste uma linha de uma borda à outra do polígono</div>}
-          {tool === "transform" && <div className="tip">Arraste o círculo superior para girar · arraste o canto para redimensionar</div>}
-          {tool === "reshape" && <div className="tip">{reshapeDrawing ? <>Contorne a nova borda · <kbd>botão direito</kbd> aplica</> : <>Comece sobre uma borda e termine sobre outra, sem manter o clique</>}</div>}
+          {tool === "polygon" && polygonDraft.length > 0 && <div className="tip">{copy.polygonFinish}</div>}
+          {tool === "freehand" && <div className="tip">{freehandDrawing ? copy.freehandFinish : copy.freehandStart}</div>}
+          {tool === "split" && <div className="tip">{copy.splitTip}</div>}
+          {tool === "transform" && <div className="tip">{copy.transformTip}</div>}
+          {tool === "reshape" && <div className="tip">{reshapeDrawing ? (reshapeStartInside ? copy.reshapeAdd : copy.reshapeDelete) : copy.reshapeStart}</div>}
           {activeAnnotation?.type === "polygon" && tool === "select" && <div className="polygon-tip">Roda do mouse amplia · nó + Delete remove em sequência · corpo + Delete apaga tudo</div>}
           {tool === "sam" && <div className="sam-controls"><div><button className={samPromptMode === 1 ? "active positive" : ""} onClick={() => setSamPromptMode(1)}><CirclePlus size={15} /> Incluir</button><button className={samPromptMode === 0 ? "active negative" : ""} onClick={() => setSamPromptMode(0)}><CircleMinus size={15} /> Excluir</button></div><span>{samLoading ? <><LoaderCircle className="spin" size={14} /> Segmentando…</> : `${samPrompts.length} ponto${samPrompts.length === 1 ? "" : "s"}`}</span><div><button disabled={!samPrompts.length || samLoading} onClick={clearSam}>Limpar</button><button className="accept" disabled={samPreview.length < 6 || samLoading} onClick={acceptSamMask}><Check size={14} /> Aceitar máscara</button><button aria-label="Configurar SAM" onClick={openSamSettings}><Settings2 size={15} /></button></div></div>}
         </div></div></div>
-        <div className="status"><div><button onClick={() => go(-1)} disabled={assets[0].id === current}><ChevronLeft size={16} /></button><span><b>{assets.findIndex((item) => item.id === current) + 1}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{transformDrag ? "Transformando polígono…" : reshapeDrawing ? "Remodelando borda…" : selectedVertex ? `Nó selecionado — encaixe ${snapping ? "ativo" : "inativo"}` : polygonDraft.length ? `${polygonDraft.length / 2} ponto(s) — Delete desfaz na ordem de criação` : multiSelected.length > 1 ? `${multiSelected.length} polígonos selecionados` : currentAnnotations.length ? `${currentAnnotations.length} anotações nesta imagem` : "Pronta para anotar"}</p><button><Keyboard size={15} /> Atalhos</button></div>
+        <div className="status"><div><button onClick={() => go(-1)} disabled={assets[0].id === current}><ChevronLeft size={16} /></button><span><b>{assets.findIndex((item) => item.id === current) + 1}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{annotationDrag ? `${copy.moving} (${annotationDrag.originals.length})` : selectionMarquee ? copy.selecting : transformDrag ? copy.transforming : reshapeDrawing ? copy.reshaping : selectedVertex ? `Nó selecionado — encaixe ${snapping ? "ativo" : "inativo"}` : polygonDraft.length ? `${polygonDraft.length / 2} ponto(s) — Delete desfaz na ordem de criação` : multiSelected.length > 1 ? `${multiSelected.length} ${copy.selectedObjects}` : currentAnnotations.length ? `${currentAnnotations.length} ${copy.imageAnnotations}` : copy.ready}</p><button><Keyboard size={15} /> {copy.shortcuts}</button></div>
       </section>
 
       <aside className={`labels ${rightOpen ? "open" : ""}`}>
-        <div className="drawer-head"><b>Classes e qualidade</b><button onClick={() => setRightOpen(false)}><X size={19} /></button></div>
-        <div className="tabs"><button className={!quality ? "active" : ""} onClick={() => setQuality(false)}>Classes</button><button className={quality ? "active" : ""} onClick={() => setQuality(true)}>Qualidade <b>{currentAnnotations.length ? 1 : 0}</b></button></div>
-        {!quality ? <><div className="label-help"><b>CLASSE ATIVA</b><span>Novas formas usarão esta classe.</span></div><div className="label-list">{labels.map((label) => <button key={label.id} className={activeLabel === label.id ? "active" : ""} onClick={() => setActiveLabel(label.id)}><i style={{ background: label.color }} /><span>{label.name}</span><em>{currentAnnotations.filter((annotation) => annotation.label === label.id).length}</em><kbd>{label.key}</kbd><Eye size={14} /></button>)}</div>
-          {addingLabel ? <div className="new-class"><input autoFocus placeholder="Nome da classe" value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><button onClick={addClass}>Adicionar</button><button onClick={() => setAddingLabel(false)}>Cancelar</button></div> : <button className="add-class" onClick={() => setAddingLabel(true)}><Plus size={15} /> Nova classe</button>}
-          <div className="instances"><div><b>ANOTAÇÕES · {currentAnnotations.length}</b><MoreHorizontal size={16} /></div>{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); return <button key={annotation.id} className={multiSelected.includes(annotation.id) ? "active" : ""} onClick={(event) => { if (event.shiftKey && annotation.type === "polygon") toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{label.name} <small>#{index + 1}</small></span><Eye size={14} /></button>; })}</div>
-        </> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>Boa consistência</span></div><article className="warn"><b>!</b><div><strong>1 possível sobreposição</strong><p>Revise “cultura #2” perto da borda direita.</p></div></article><article><b>✓</b><div><strong>Classes válidas</strong><p>Todas as formas possuem uma classe.</p></div></article><article><b>✓</b><div><strong>Sem formas vazias</strong><p>Nenhuma área inválida foi detectada.</p></div></article><button onClick={() => { setQuality(false); setSelected(currentAnnotations[0]?.id ?? null); setMultiSelected(currentAnnotations[0] ? [currentAnnotations[0].id] : []); }}>Revisar apontamento</button></div>}
-        <div className="hint"><b>{activeAnnotation?.type === "polygon" ? "Edição vetorial estilo QGIS" : "Dica rápida"}</b><p>{activeAnnotation?.type === "polygon" ? "Mova e encaixe vértices, remodele bordas, transforme, simplifique, una ou corte pela barra superior." : "Use B, P, F, K e S para anotar sem tirar a mão do teclado."}</p></div>
+        <div className="drawer-head"><b>{copy.classes} · {copy.quality}</b><button onClick={() => setRightOpen(false)}><X size={19} /></button></div>
+        <div className="tabs"><button className={!quality ? "active" : ""} onClick={() => setQuality(false)}>{copy.classes}</button><button className={quality ? "active" : ""} onClick={() => setQuality(true)}>{copy.quality} <b>{currentAnnotations.length ? 1 : 0}</b></button></div>
+        {!quality ? <><div className="label-help"><b>{copy.activeClass}</b><span>{copy.newShapesClass}</span></div><div className="label-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); return <div key={label.id} className={`label-row ${activeLabel === label.id ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="label-main" onClick={() => setActiveLabel(label.id)}><i style={{ background: label.color }} /><span>{label.name}</span><em>{currentAnnotations.filter((annotation) => annotation.label === label.id).length}</em><kbd>{label.key}</kbd></button><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
+          {addingLabel ? <div className="new-class"><input autoFocus placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><button onClick={addClass}>{copy.add}</button><button onClick={() => setAddingLabel(false)}>{copy.cancel}</button></div> : <button className="add-class" onClick={() => setAddingLabel(true)}><Plus size={15} /> {copy.newClass}</button>}
+          <div className="instances"><div><b>{copy.annotations} · {currentAnnotations.length}</b><MoreHorizontal size={16} /></div>{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); return <div key={annotation.id} className={`instance-row ${multiSelected.includes(annotation.id) ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
+        </> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>{copy.goodConsistency}</span></div><article className="warn"><b>!</b><div><strong>{copy.possibleOverlap}</strong><p>{copy.overlapText}</p></div></article><article><b>✓</b><div><strong>{copy.validClasses}</strong><p>{copy.validClassesText}</p></div></article><article><b>✓</b><div><strong>{copy.noEmpty}</strong><p>{copy.noEmptyText}</p></div></article><button onClick={() => { setQuality(false); setSelected(visibleAnnotations[0]?.id ?? null); setMultiSelected(visibleAnnotations[0] ? [visibleAnnotations[0].id] : []); }}>{copy.review}</button></div>}
+        <div className="hint"><b>{activeAnnotation?.type === "polygon" ? copy.vectorEditing : copy.quickTip}</b><p>{activeAnnotation?.type === "polygon" ? copy.vectorHint : copy.shortcutHint}</p></div>
       </aside>
     </div>
 
-    {samOpen && <div className="modal-backdrop"><section className="sam-modal sam-local-modal" role="dialog" aria-modal="true" aria-labelledby="sam-title"><header><div><span><WandSparkles size={18} /></span><div><h2 id="sam-title">SAM local, sem token</h2><p>O modelo e as imagens permanecem no seu computador.</p></div></div><button onClick={() => setSamOpen(false)} aria-label="Fechar"><X size={19} /></button></header><div className="hardware-warning"><b>Antes de rodar</b><p><strong>Recomendado — ViT-B:</strong> GPU NVIDIA com 6 GB de VRAM (8 GB ideal) ou CPU com 4+ núcleos e 16 GB de RAM. Em CPU funciona, mas o carregamento da imagem pode levar dezenas de segundos.</p><p><strong>ViT-L / ViT-H:</strong> prefira 12–16 GB de VRAM e 32 GB de RAM. São checkpoints maiores e mais lentos.</p></div><div className="sam-setup"><b>Configuração rápida</b><ol><li><a href="https://github.com/facebookresearch/segment-anything#model-checkpoints" target="_blank" rel="noreferrer"><Download size={13} /> Abrir página oficial dos checkpoints</a><small>Escolha <strong>ViT-B</strong> na seção Model Checkpoints.</small></li><li><a href="/visionlabel-sam-local.py" download><Download size={13} /> Baixar conector local</a></li><li>Instale as dependências e execute o conector apontando para o <code>.pth</code>.</li></ol><pre>pip install torch torchvision fastapi uvicorn pillow opencv-python</pre><pre>pip install git+https://github.com/facebookresearch/segment-anything.git</pre><pre>python visionlabel-sam-local.py --checkpoint sam_vit_b_01ec64.pth --model-type vit_b</pre></div><label>Endereço local<input autoFocus type="url" placeholder="http://127.0.0.1:7860/predict" value={samEndpointDraft} onChange={(event) => setSamEndpointDraft(event.target.value)} /></label><div className="sam-contract"><b>Sem upload e sem credenciais</b><p>O Site conversa apenas com o conector em <code>localhost</code>. Seu navegador poderá pedir permissão para acessar a rede local. Nenhum token é usado ou armazenado.</p></div><footer><button onClick={() => setSamOpen(false)}>Cancelar</button><button className="connect" onClick={() => void connectSam()}><Link2 size={15} /> Verificar e usar</button></footer></section></div>}
+    {preferencesOpen && <div className="modal-backdrop"><section className="sam-modal preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title"><header><div><span><Settings2 size={18} /></span><div><h2 id="preferences-title">{copy.preferences}</h2><p>VisionLabel</p></div></div><button onClick={() => setPreferencesOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="preferences-tabs"><button className={preferencesTab === "appearance" ? "active" : ""} onClick={() => setPreferencesTab("appearance")}><Sun size={14} />{copy.appearance}</button><button className={preferencesTab === "language" ? "active" : ""} onClick={() => setPreferencesTab("language")}><Languages size={14} />{copy.language}</button></div>{preferencesTab === "appearance" ? <div className="preference-options"><button className={themeMode === "system" ? "active" : ""} onClick={() => setThemeMode("system")}><Monitor size={20} /><b>{copy.system}</b></button><button className={themeMode === "light" ? "active" : ""} onClick={() => setThemeMode("light")}><Sun size={20} /><b>{copy.light}</b></button><button className={themeMode === "dark" ? "active" : ""} onClick={() => setThemeMode("dark")}><Moon size={20} /><b>{copy.dark}</b></button></div> : <div className="language-options"><button className={language === "pt" ? "active" : ""} onClick={() => setLanguage("pt")}><b>Português</b><span>PT-BR</span></button><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}><b>English</b><span>EN</span></button><button className={language === "fr" ? "active" : ""} onClick={() => setLanguage("fr")}><b>Français</b><span>FR</span></button><button className={language === "es" ? "active" : ""} onClick={() => setLanguage("es")}><b>Español</b><span>ES</span></button></div>}<footer><button className="connect" onClick={() => setPreferencesOpen(false)}><Check size={15} /> {copy.close}</button></footer></section></div>}
+    {samOpen && <div className="modal-backdrop"><section className="sam-modal sam-local-modal" role="dialog" aria-modal="true" aria-labelledby="sam-title"><header><div><span><WandSparkles size={18} /></span><div><h2 id="sam-title">{copy.samTitle}</h2><p>{copy.samSubtitle}</p></div></div><button onClick={() => setSamOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="hardware-warning"><b>{copy.beforeRun}</b><p><strong>Recomendado — ViT-B:</strong> GPU NVIDIA com 6 GB de VRAM (8 GB ideal) ou CPU com 4+ núcleos e 16 GB de RAM. Em CPU funciona, mas o carregamento da imagem pode levar dezenas de segundos.</p><p><strong>ViT-L / ViT-H:</strong> prefira 12–16 GB de VRAM e 32 GB de RAM. São checkpoints maiores e mais lentos.</p></div><div className="sam-setup"><b>{copy.quickSetup}</b><ol><li><a href="https://github.com/facebookresearch/segment-anything#model-checkpoints" target="_blank" rel="noreferrer"><Download size={13} /> {copy.checkpointPage}</a><small>Escolha <strong>ViT-B</strong> na seção Model Checkpoints.</small></li><li><a href="/visionlabel-sam-local.py" download><Download size={13} /> {copy.connectorDownload}</a></li><li>Instale as dependências e execute o conector apontando para o <code>.pth</code>.</li></ol><pre>pip install torch torchvision fastapi uvicorn pillow opencv-python</pre><pre>pip install git+https://github.com/facebookresearch/segment-anything.git</pre><pre>python visionlabel-sam-local.py --checkpoint sam_vit_b_01ec64.pth --model-type vit_b</pre></div><label>{copy.localAddress}<input autoFocus type="url" placeholder="http://127.0.0.1:7860/predict" value={samEndpointDraft} onChange={(event) => setSamEndpointDraft(event.target.value)} /></label><div className="sam-contract"><b>{copy.noUpload}</b><p>O Site conversa apenas com o conector em <code>localhost</code>. Seu navegador poderá pedir permissão para acessar a rede local. Nenhum token é usado ou armazenado.</p></div><footer><button onClick={() => setSamOpen(false)}>{copy.cancel}</button><button className="connect" onClick={() => void connectSam()}><Link2 size={15} /> {copy.verifyUse}</button></footer></section></div>}
     {(leftOpen || rightOpen) && <button className="backdrop" onClick={() => { setLeftOpen(false); setRightOpen(false); }} aria-label="Fechar painel" />}
     {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
   </main>;
