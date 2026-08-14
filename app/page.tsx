@@ -3,8 +3,8 @@
 import {
   Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
   Cloud, Combine, Copy, Download, Eye, EyeOff, FolderOpen, Hand, ImagePlus, Keyboard, Languages, Link2,
-  ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine,
-  Monitor, Moon, Palette, Pencil, Pentagon, Plus, Redo2, RotateCcw, Scissors, Search, Settings2, Sparkles,
+  Focus, ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine,
+  Monitor, Moon, Palette, Pencil, Pentagon, Plus, Redo2, Scissors, Search, Settings2, Sparkles,
   Sun, Tags, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -32,6 +32,34 @@ const startLabels: Label[] = [
   { id: "crop", name: "cultura", color: "#a8e063", key: "2" },
   { id: "soil", name: "solo exposto", color: "#ffc857", key: "3" },
 ];
+
+const UNLABELED_ID = "unlabeled";
+const UNLABELED_COLOR = "#929a95";
+const unlabeledLabel = (name = "Sem label"): Label => ({ id: UNLABELED_ID, name, color: UNLABELED_COLOR, key: "" });
+
+function loadInitialLabels() {
+  if (typeof window === "undefined") return startLabels;
+  try {
+    const storedLabels = JSON.parse(localStorage.getItem("visionlabel-labels") ?? "null");
+    const labels = Array.isArray(storedLabels) && storedLabels.length ? storedLabels as Label[] : startLabels;
+    const storedAnnotations = JSON.parse(localStorage.getItem("visionlabel-annotations") ?? "null");
+    const annotations = Array.isArray(storedAnnotations) ? storedAnnotations as Annotation[] : startAnnotations;
+    const validIds = new Set(labels.map((label) => label.id));
+    return annotations.some((annotation) => !validIds.has(annotation.label)) && !validIds.has(UNLABELED_ID)
+      ? [...labels, unlabeledLabel()]
+      : labels;
+  } catch { return startLabels; }
+}
+
+function loadInitialAnnotations() {
+  if (typeof window === "undefined") return startAnnotations;
+  try {
+    const stored = JSON.parse(localStorage.getItem("visionlabel-annotations") ?? "null");
+    const annotations = Array.isArray(stored) ? stored as Annotation[] : startAnnotations;
+    const validIds = new Set(loadInitialLabels().map((label) => label.id));
+    return annotations.map((annotation) => validIds.has(annotation.label) ? annotation : { ...annotation, label: UNLABELED_ID });
+  } catch { return startAnnotations; }
+}
 
 const startAnnotations: Annotation[] = [
   { id: "a1", asset: "i1", label: "weed", type: "box", x: 150, y: 215, w: 210, h: 195 },
@@ -63,15 +91,12 @@ function ToolButton({ title, active, disabled, onClick, children, keyHint }: { t
 export default function Home() {
   const [assets, setAssets] = useState(demoAssets);
   const [current, setCurrent] = useState("i1");
-  const [labels, setLabels] = useState<Label[]>(() => {
-    if (typeof window === "undefined") return startLabels;
-    try {
-      const stored = JSON.parse(localStorage.getItem("visionlabel-labels") ?? "null");
-      return Array.isArray(stored) && stored.length ? stored : startLabels;
-    } catch { return startLabels; }
+  const [labels, setLabels] = useState<Label[]>(loadInitialLabels);
+  const [activeLabel, setActiveLabel] = useState(() => {
+    const initialLabels = loadInitialLabels();
+    return initialLabels.some((label) => label.id === "weed") ? "weed" : initialLabels[0]?.id ?? UNLABELED_ID;
   });
-  const [activeLabel, setActiveLabel] = useState("weed");
-  const [annotations, setAnnotations] = useState(startAnnotations);
+  const [annotations, setAnnotations] = useState<Annotation[]>(loadInitialAnnotations);
   const [history, setHistory] = useState<Annotation[][]>([]);
   const [tool, setTool] = useState<Tool>("select");
   const [selected, setSelected] = useState<string | null>(null);
@@ -96,7 +121,10 @@ export default function Home() {
   const [saved, setSaved] = useState(true);
   const [newLabel, setNewLabel] = useState("");
   const [newLabelColor, setNewLabelColor] = useState(colors[0]);
-  const [batchLabel, setBatchLabel] = useState("weed");
+  const [batchLabel, setBatchLabel] = useState(() => {
+    const initialLabels = loadInitialLabels();
+    return initialLabels.some((label) => label.id === "weed") ? "weed" : initialLabels[0]?.id ?? UNLABELED_ID;
+  });
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
@@ -178,7 +206,7 @@ export default function Home() {
   const selectedIds = multiSelected.length ? multiSelected : selected ? [selected] : [];
   const resolvedBatchLabel = labels.some((label) => label.id === batchLabel) ? batchLabel : labels[0]?.id ?? "";
   const selectedPolygons = annotations.filter((annotation) => multiSelected.includes(annotation.id) && annotation.type === "polygon");
-  const getLabel = useCallback((id: string) => labels.find((label) => label.id === id) ?? labels[0], [labels]);
+  const getLabel = useCallback((id: string) => labels.find((label) => label.id === id) ?? labels[0] ?? unlabeledLabel(copy.unlabeled), [copy.unlabeled, labels]);
   const completed = useMemo(() => new Set(annotations.map((annotation) => annotation.asset)).size, [annotations]);
   const remember = useCallback(() => { setHistory((items) => [...items.slice(-24), annotations]); setSaved(false); }, [annotations]);
 
@@ -315,8 +343,11 @@ export default function Home() {
   }
 
   function zoomWithWheel(event: React.WheelEvent<HTMLDivElement>) {
+    if (!event.shiftKey) return;
     event.preventDefault();
-    const nextZoom = Math.max(30, Math.min(400, zoom + (event.deltaY < 0 ? 10 : -10)));
+    const wheelDelta = event.deltaY || event.deltaX;
+    if (!wheelDelta) return;
+    const nextZoom = Math.max(10, Math.min(400, zoom + (wheelDelta < 0 ? 10 : -10)));
     if (nextZoom === zoom) return;
     const scroller = scrollRef.current;
     const canvas = svgRef.current?.parentElement;
@@ -332,6 +363,28 @@ export default function Home() {
       scroller.scrollLeft += newBounds.left + anchorX * newBounds.width - clientX;
       scroller.scrollTop += newBounds.top + anchorY * newBounds.height - clientY;
     });
+  }
+
+  function fitImageToViewport() {
+    const scroller = scrollRef.current;
+    if (!scroller) { setZoom(92); return; }
+    const imageWidth = asset.width ?? 1000;
+    const imageHeight = asset.height ?? 650;
+    const widthAtHundred = Math.max(1, scroller.clientWidth);
+    const heightAtHundred = widthAtHundred * imageHeight / imageWidth;
+    const heightFit = scroller.clientHeight / Math.max(1, heightAtHundred) * 100;
+    const nextZoom = Math.max(10, Math.min(100, Math.floor(Math.min(100, heightFit) * 0.96)));
+    setZoom(nextZoom);
+    requestAnimationFrame(() => requestAnimationFrame(() => {
+      const currentScroller = scrollRef.current;
+      if (!currentScroller) return;
+      currentScroller.scrollTo({
+        left: Math.max(0, (currentScroller.scrollWidth - currentScroller.clientWidth) / 2),
+        top: Math.max(0, (currentScroller.scrollHeight - currentScroller.clientHeight) / 2),
+        behavior: "smooth",
+      });
+    }));
+    showToast(copy.imageCentered);
   }
 
   function capture(pointerId: number) { svgRef.current?.setPointerCapture(pointerId); }
@@ -735,6 +788,32 @@ export default function Home() {
     requestAnimationFrame(() => labelInputRef.current?.focus());
   }
 
+  function deleteLabel(labelId: string) {
+    if (labelId === UNLABELED_ID) return;
+    const label = labels.find((item) => item.id === labelId);
+    if (!label) return;
+    const reassignedCount = annotations.filter((annotation) => annotation.label === labelId).length;
+    const remainingLabels = labels.filter((item) => item.id !== labelId);
+    const needsUnlabeled = reassignedCount > 0 || remainingLabels.length === 0;
+    const fallback = remainingLabels.find((item) => item.id === UNLABELED_ID)
+      ?? (needsUnlabeled ? unlabeledLabel(copy.unlabeled) : remainingLabels[0])
+      ?? unlabeledLabel(copy.unlabeled);
+    if (reassignedCount) remember();
+    setLabels(needsUnlabeled && !remainingLabels.some((item) => item.id === UNLABELED_ID)
+      ? [...remainingLabels, fallback]
+      : remainingLabels);
+    if (reassignedCount) {
+      setAnnotations((items) => items.map((annotation) => annotation.label === labelId ? { ...annotation, label: UNLABELED_ID } : annotation));
+      setSaved(false);
+    }
+    setHiddenLabels((items) => items.filter((id) => id !== labelId && (!reassignedCount || id !== UNLABELED_ID)));
+    if (activeLabel === labelId) setActiveLabel(fallback?.id ?? UNLABELED_ID);
+    if (batchLabel === labelId) setBatchLabel(fallback?.id ?? UNLABELED_ID);
+    showToast(reassignedCount
+      ? `${label.name} excluída. ${reassignedCount} anotação(ões) foram movidas para ${copy.unlabeled}.`
+      : `${label.name} excluída.`);
+  }
+
   function reclassifySelection() {
     if (!selectedIds.length || !resolvedBatchLabel) return;
     const label = labels.find((item) => item.id === resolvedBatchLabel);
@@ -820,7 +899,7 @@ export default function Home() {
           <div><ToolButton title={copy.box} keyHint="B" active={tool === "box"} onClick={() => setTool("box")}><Box size={18} /></ToolButton><ToolButton title={copy.polygon} keyHint="P" active={tool === "polygon"} onClick={() => setTool("polygon")}><Pentagon size={18} /></ToolButton><ToolButton title={copy.freehand} keyHint="F" active={tool === "freehand"} onClick={() => setTool("freehand")}><PenLine size={18} /></ToolButton><ToolButton title={copy.point} keyHint="K" active={tool === "point"} onClick={() => setTool("point")}><span className="point-icon" /></ToolButton><ToolButton title={copy.sam} keyHint="S" active={tool === "sam"} onClick={activateSam}><WandSparkles size={18} /></ToolButton></div><i />
           <div className="edit-tools"><ToolButton title={copy.simplify} disabled={activeAnnotation?.type !== "polygon"} onClick={simplifySelected}><ListRestart size={18} /></ToolButton><ToolButton title={copy.duplicate} disabled={activeAnnotation?.type !== "polygon"} onClick={duplicateSelected}><Copy size={17} /></ToolButton><ToolButton title={copy.merge} disabled={selectedPolygons.length < 2} onClick={mergeSelected}><Combine size={18} /></ToolButton><ToolButton title={copy.split} disabled={activeAnnotation?.type !== "polygon"} active={tool === "split"} onClick={() => setTool("split")}><Scissors size={17} /></ToolButton><ToolButton title={copy.transform} keyHint="T" disabled={activeAnnotation?.type !== "polygon"} active={tool === "transform"} onClick={() => setTool("transform")}><Maximize2 size={17} /></ToolButton><ToolButton title={copy.reshape} keyHint="R" disabled={activeAnnotation?.type !== "polygon"} active={tool === "reshape"} onClick={() => setTool("reshape")}><PenTool size={17} /></ToolButton><ToolButton title={snapping ? copy.snapOn : copy.snapOff} active={snapping} onClick={() => { setSnapping((value) => !value); setSnapGuide(null); }}><Magnet size={17} /></ToolButton></div><i />
           <div><ToolButton title="Desfazer" disabled={!history.length} onClick={undo}><Undo2 size={18} /></ToolButton><ToolButton title="Refazer" disabled><Redo2 size={18} /></ToolButton><ToolButton title={selectedVertex ? "Excluir nó e avançar na sequência" : polygonDraft.length ? "Remover último ponto criado" : "Excluir forma inteira"} disabled={!selected && !polygonDraft.length} onClick={deleteSelection}><Trash2 size={18} /></ToolButton></div><span className="spacer" />
-          <div className="zoom"><button onClick={() => setZoom((value) => Math.max(30, value - 10))}><ZoomOut size={15} /></button><span>{zoom}%</span><button onClick={() => setZoom((value) => Math.min(400, value + 10))}><ZoomIn size={15} /></button></div><ToolButton title="Redefinir zoom" onClick={() => setZoom(92)}><RotateCcw size={16} /></ToolButton>
+          <div className="zoom" title={copy.shiftZoom}><button aria-label={copy.zoomOut} onClick={() => setZoom((value) => Math.max(10, value - 10))}><ZoomOut size={15} /></button><span>{zoom}%</span><button aria-label={copy.zoomIn} onClick={() => setZoom((value) => Math.min(400, value + 10))}><ZoomIn size={15} /></button></div><ToolButton title={copy.fitImage} onClick={fitImageToViewport}><Focus size={16} /></ToolButton>
         </div>
 
         <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}><div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
@@ -865,10 +944,10 @@ export default function Home() {
       <aside className={`labels ${rightOpen ? "open" : ""}`}>
         <div className="drawer-head"><b>{copy.classes} · {copy.quality}</b><button onClick={() => setRightOpen(false)}><X size={19} /></button></div>
         <div className="tabs"><button className={!quality ? "active" : ""} onClick={() => setQuality(false)}>{copy.classes}</button><button className={quality ? "active" : ""} onClick={() => setQuality(true)}>{copy.quality} <b>{currentAnnotations.length ? 1 : 0}</b></button></div>
-        {!quality ? <><section className="label-creator"><div><Palette size={14} /><span><b>{copy.labelStudio}</b><small>{copy.labelStudioHint}</small></span></div><div className="label-create-row"><input ref={labelInputRef} aria-label={copy.className} placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><input className="label-color" type="color" aria-label={copy.labelColor} title={copy.labelColor} value={newLabelColor} onChange={(event) => setNewLabelColor(event.target.value)} /><button aria-label={copy.createLabel} title={copy.createLabel} disabled={!newLabel.trim()} onClick={addClass}><Plus size={15} /></button></div></section><div className="label-help"><b>{copy.activeClass}</b><span>{copy.newShapesClass}</span></div><div className="label-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); return <div key={label.id} className={`label-row ${activeLabel === label.id ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="label-main" onClick={() => setActiveLabel(label.id)}><i style={{ background: label.color }} /><span>{label.name}</span><em>{currentAnnotations.filter((annotation) => annotation.label === label.id).length}</em>{label.key ? <kbd>{label.key}</kbd> : <span />}</button><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
-          {selectedIds.length > 0 && <section className="batch-class"><div><Tags size={14} /><span><b>{selectedIds.length} {copy.batchSelection}</b><small>{copy.changeClass}</small></span></div><div><select aria-label={copy.changeClass} value={resolvedBatchLabel} onChange={(event) => setBatchLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.name}</option>)}</select><button onClick={reclassifySelection}>{copy.applyClass}</button></div></section>}
-          <div className="instances"><div><b>{copy.annotations} · {currentAnnotations.length}</b><MoreHorizontal size={16} /></div>{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); return <div key={annotation.id} className={`instance-row ${multiSelected.includes(annotation.id) ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); setBatchLabel(annotation.label); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
-        </> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>{copy.goodConsistency}</span></div><article className="warn"><b>!</b><div><strong>{copy.possibleOverlap}</strong><p>{copy.overlapText}</p></div></article><article><b>✓</b><div><strong>{copy.validClasses}</strong><p>{copy.validClassesText}</p></div></article><article><b>✓</b><div><strong>{copy.noEmpty}</strong><p>{copy.noEmptyText}</p></div></article><button onClick={() => { setQuality(false); setSelected(visibleAnnotations[0]?.id ?? null); setMultiSelected(visibleAnnotations[0] ? [visibleAnnotations[0].id] : []); }}>{copy.review}</button></div>}
+        {!quality ? <div className="labels-editor"><section className="label-creator"><div><Palette size={14} /><span><b>{copy.labelStudio}</b><small>{copy.labelStudioHint}</small></span></div><div className="label-create-row"><input ref={labelInputRef} aria-label={copy.className} placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><input className="label-color" type="color" aria-label={copy.labelColor} title={copy.labelColor} value={newLabelColor} onChange={(event) => setNewLabelColor(event.target.value)} /><button aria-label={copy.createLabel} title={copy.createLabel} disabled={!newLabel.trim()} onClick={addClass}><Plus size={15} /></button></div></section><div className="label-help"><b>{copy.activeClass}</b><span>{copy.newShapesClass}</span></div><div className="label-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); const isUnlabeled = label.id === UNLABELED_ID; return <div key={label.id} className={`label-row ${activeLabel === label.id ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="label-main" onClick={() => { setActiveLabel(label.id); if (selectedIds.length) setBatchLabel(label.id); }}><i style={{ background: label.color }} /><span>{isUnlabeled ? copy.unlabeled : label.name}</span><em>{currentAnnotations.filter((annotation) => annotation.label === label.id).length}</em>{label.key ? <kbd>{label.key}</kbd> : <span />}</button><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button><button className="delete-label" disabled={isUnlabeled} title={isUnlabeled ? copy.unlabeledProtected : copy.deleteClass} aria-label={`${copy.deleteClass}: ${label.name}`} onClick={() => deleteLabel(label.id)}><Trash2 size={13} /></button></div>; })}</div>
+          {selectedIds.length > 0 && <section className="batch-class"><div><Tags size={14} /><span><b>{selectedIds.length} {copy.batchSelection}</b><small>{copy.changeClass}</small></span></div><div><select aria-label={copy.changeClass} value={resolvedBatchLabel} onChange={(event) => setBatchLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.id === UNLABELED_ID ? copy.unlabeled : label.name}</option>)}</select><button onClick={reclassifySelection}>{copy.applyClass}</button></div></section>}
+          <div className="instances"><div><b>{copy.annotations} · {currentAnnotations.length}</b><MoreHorizontal size={16} /></div>{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); return <div key={annotation.id} className={`instance-row ${multiSelected.includes(annotation.id) ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
+        </div> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>{copy.goodConsistency}</span></div><article className="warn"><b>!</b><div><strong>{copy.possibleOverlap}</strong><p>{copy.overlapText}</p></div></article><article><b>✓</b><div><strong>{copy.validClasses}</strong><p>{copy.validClassesText}</p></div></article><article><b>✓</b><div><strong>{copy.noEmpty}</strong><p>{copy.noEmptyText}</p></div></article><button onClick={() => { setQuality(false); setSelected(visibleAnnotations[0]?.id ?? null); setMultiSelected(visibleAnnotations[0] ? [visibleAnnotations[0].id] : []); }}>{copy.review}</button></div>}
         <div className="hint"><b>{activeAnnotation?.type === "polygon" ? copy.vectorEditing : copy.quickTip}</b><p>{activeAnnotation?.type === "polygon" ? copy.vectorHint : copy.shortcutHint}</p></div>
       </aside>
     </div>
