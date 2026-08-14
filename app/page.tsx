@@ -89,6 +89,7 @@ function ToolButton({ title, active, disabled, onClick, children, keyHint }: { t
 }
 
 export default function Home() {
+  const [mounted, setMounted] = useState(false);
   const [assets, setAssets] = useState(demoAssets);
   const [current, setCurrent] = useState("i1");
   const [labels, setLabels] = useState<Label[]>(loadInitialLabels);
@@ -152,6 +153,8 @@ export default function Home() {
   const [splitStart, setSplitStart] = useState<{ x: number; y: number } | null>(null);
   const [splitEnd, setSplitEnd] = useState<{ x: number; y: number } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
+  const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
+  const [pendingDeleteClassIds, setPendingDeleteClassIds] = useState<string[]>([]);
   const [samOpen, setSamOpen] = useState(false);
   const [samEndpoint, setSamEndpoint] = useState(() => {
     if (typeof window === "undefined") return "";
@@ -205,10 +208,18 @@ export default function Home() {
   const handleScale = Math.max(0.25, Math.min(3.34, 100 / zoom));
   const selectedIds = multiSelected.length ? multiSelected : selected ? [selected] : [];
   const resolvedBatchLabel = labels.some((label) => label.id === batchLabel) ? batchLabel : labels[0]?.id ?? "";
+  const selectableClasses = labels.filter((label) => label.id !== UNLABELED_ID);
+  const pendingDeleteClasses = labels.filter((label) => pendingDeleteClassIds.includes(label.id));
+  const pendingAffectedAnnotations = annotations.filter((annotation) => pendingDeleteClassIds.includes(annotation.label)).length;
   const selectedPolygons = annotations.filter((annotation) => multiSelected.includes(annotation.id) && annotation.type === "polygon");
   const getLabel = useCallback((id: string) => labels.find((label) => label.id === id) ?? labels[0] ?? unlabeledLabel(copy.unlabeled), [copy.unlabeled, labels]);
   const completed = useMemo(() => new Set(annotations.map((annotation) => annotation.asset)).size, [annotations]);
   const remember = useCallback(() => { setHistory((items) => [...items.slice(-24), annotations]); setSaved(false); }, [annotations]);
+
+  useEffect(() => {
+    const frame = window.requestAnimationFrame(() => setMounted(true));
+    return () => window.cancelAnimationFrame(frame);
+  }, []);
 
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode;
@@ -788,12 +799,18 @@ export default function Home() {
     requestAnimationFrame(() => labelInputRef.current?.focus());
   }
 
-  function deleteLabel(labelId: string) {
-    if (labelId === UNLABELED_ID) return;
-    const label = labels.find((item) => item.id === labelId);
-    if (!label) return;
-    const reassignedCount = annotations.filter((annotation) => annotation.label === labelId).length;
-    const remainingLabels = labels.filter((item) => item.id !== labelId);
+  function requestClassDeletion(classIds: string[]) {
+    const validIds = classIds.filter((id, index) => id !== UNLABELED_ID && classIds.indexOf(id) === index && labels.some((label) => label.id === id));
+    if (validIds.length) setPendingDeleteClassIds(validIds);
+  }
+
+  function deletePendingClasses() {
+    const ids = pendingDeleteClassIds.filter((id) => id !== UNLABELED_ID && labels.some((label) => label.id === id));
+    if (!ids.length) { setPendingDeleteClassIds([]); return; }
+    const deletedIds = new Set(ids);
+    const deletedLabels = labels.filter((label) => deletedIds.has(label.id));
+    const reassignedCount = annotations.filter((annotation) => deletedIds.has(annotation.label)).length;
+    const remainingLabels = labels.filter((item) => !deletedIds.has(item.id));
     const needsUnlabeled = reassignedCount > 0 || remainingLabels.length === 0;
     const fallback = remainingLabels.find((item) => item.id === UNLABELED_ID)
       ?? (needsUnlabeled ? unlabeledLabel(copy.unlabeled) : remainingLabels[0])
@@ -803,15 +820,17 @@ export default function Home() {
       ? [...remainingLabels, fallback]
       : remainingLabels);
     if (reassignedCount) {
-      setAnnotations((items) => items.map((annotation) => annotation.label === labelId ? { ...annotation, label: UNLABELED_ID } : annotation));
+      setAnnotations((items) => items.map((annotation) => deletedIds.has(annotation.label) ? { ...annotation, label: UNLABELED_ID } : annotation));
       setSaved(false);
     }
-    setHiddenLabels((items) => items.filter((id) => id !== labelId && (!reassignedCount || id !== UNLABELED_ID)));
-    if (activeLabel === labelId) setActiveLabel(fallback?.id ?? UNLABELED_ID);
-    if (batchLabel === labelId) setBatchLabel(fallback?.id ?? UNLABELED_ID);
+    setHiddenLabels((items) => items.filter((id) => !deletedIds.has(id) && (!reassignedCount || id !== UNLABELED_ID)));
+    if (deletedIds.has(activeLabel)) setActiveLabel(fallback?.id ?? UNLABELED_ID);
+    if (deletedIds.has(batchLabel)) setBatchLabel(fallback?.id ?? UNLABELED_ID);
+    setSelectedClassIds((items) => items.filter((id) => !deletedIds.has(id)));
+    setPendingDeleteClassIds([]);
     showToast(reassignedCount
-      ? `${label.name} excluída. ${reassignedCount} anotação(ões) foram movidas para ${copy.unlabeled}.`
-      : `${label.name} excluída.`);
+      ? `${deletedLabels.length} classe(s) excluída(s). ${reassignedCount} anotação(ões) foram movidas para ${copy.unlabeled}.`
+      : `${deletedLabels.length} classe(s) excluída(s).`);
   }
 
   function reclassifySelection() {
@@ -874,6 +893,8 @@ export default function Home() {
   function clearSam() { setSamPrompts([]); setSamPreview([]); }
   function chooseImage(id: string) { setCurrent(id); setSelected(null); setMultiSelected([]); setSelectedVertex(null); resetDrafts(); setLeftOpen(false); }
   function go(direction: number) { const index = assets.findIndex((item) => item.id === current); chooseImage(assets[Math.max(0, Math.min(assets.length - 1, index + direction))].id); }
+
+  if (!mounted) return <main className="shell app-loading" aria-busy="true"><div className="loading-card"><span className="mark"><Pentagon size={18} /></span><b>vision<span>label</span></b></div></main>;
 
   return <main className="shell">
     <header className="topbar">
@@ -944,7 +965,9 @@ export default function Home() {
       <aside className={`labels ${rightOpen ? "open" : ""}`}>
         <div className="drawer-head"><b>{copy.classes} · {copy.quality}</b><button onClick={() => setRightOpen(false)}><X size={19} /></button></div>
         <div className="tabs"><button className={!quality ? "active" : ""} onClick={() => setQuality(false)}>{copy.classes}</button><button className={quality ? "active" : ""} onClick={() => setQuality(true)}>{copy.quality} <b>{currentAnnotations.length ? 1 : 0}</b></button></div>
-        {!quality ? <div className="labels-editor"><section className="label-creator"><div><Palette size={14} /><span><b>{copy.labelStudio}</b><small>{copy.labelStudioHint}</small></span></div><div className="label-create-row"><input ref={labelInputRef} aria-label={copy.className} placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><input className="label-color" type="color" aria-label={copy.labelColor} title={copy.labelColor} value={newLabelColor} onChange={(event) => setNewLabelColor(event.target.value)} /><button aria-label={copy.createLabel} title={copy.createLabel} disabled={!newLabel.trim()} onClick={addClass}><Plus size={15} /></button></div></section><div className="label-help"><b>{copy.activeClass}</b><span>{copy.newShapesClass}</span></div><div className="label-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); const isUnlabeled = label.id === UNLABELED_ID; return <div key={label.id} className={`label-row ${activeLabel === label.id ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="label-main" onClick={() => { setActiveLabel(label.id); if (selectedIds.length) setBatchLabel(label.id); }}><i style={{ background: label.color }} /><span>{isUnlabeled ? copy.unlabeled : label.name}</span><em>{currentAnnotations.filter((annotation) => annotation.label === label.id).length}</em>{label.key ? <kbd>{label.key}</kbd> : <span />}</button><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button><button className="delete-label" disabled={isUnlabeled} title={isUnlabeled ? copy.unlabeledProtected : copy.deleteClass} aria-label={`${copy.deleteClass}: ${label.name}`} onClick={() => deleteLabel(label.id)}><Trash2 size={13} /></button></div>; })}</div>
+        {!quality ? <div className="labels-editor"><section className="label-creator"><div><Palette size={14} /><span><b>{copy.labelStudio}</b><small>{copy.labelStudioHint}</small></span></div><div className="label-create-row"><input ref={labelInputRef} aria-label={copy.className} placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><input className="label-color" type="color" aria-label={copy.labelColor} title={copy.labelColor} value={newLabelColor} onChange={(event) => setNewLabelColor(event.target.value)} /><button aria-label={copy.createLabel} title={copy.createLabel} disabled={!newLabel.trim()} onClick={addClass}><Plus size={15} /></button></div></section>
+          <div className="label-help"><div><b>{copy.activeClass}</b>{selectableClasses.length > 0 && <button onClick={() => setSelectedClassIds(selectedClassIds.length === selectableClasses.length ? [] : selectableClasses.map((label) => label.id))}>{selectedClassIds.length === selectableClasses.length ? copy.clearClassSelection : copy.selectAllClasses}</button>}</div>{selectedClassIds.length ? <div className="class-selection-summary"><span>{selectedClassIds.length} {copy.classesSelected}</span><button onClick={() => requestClassDeletion(selectedClassIds)}><Trash2 size={12} />{copy.deleteSelectedClasses}</button></div> : <span>{copy.newShapesClass}</span>}</div>
+          <div className="label-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); const isUnlabeled = label.id === UNLABELED_ID; const isChecked = selectedClassIds.includes(label.id); return <div key={label.id} className={`label-row ${activeLabel === label.id ? "active" : ""} ${isHidden ? "hidden" : ""} ${isChecked ? "checked" : ""}`}>{isUnlabeled ? <span className="label-selector-spacer" /> : <button className={`label-selector ${isChecked ? "selected" : ""}`} aria-label={`${copy.selectClass}: ${label.name}`} aria-pressed={isChecked} onClick={() => setSelectedClassIds((items) => items.includes(label.id) ? items.filter((id) => id !== label.id) : [...items, label.id])}>{isChecked && <Check size={11} />}</button>}<button className="label-main" onClick={() => setActiveLabel(label.id)}><i style={{ background: label.color }} /><span>{isUnlabeled ? copy.unlabeled : label.name}</span><em>{currentAnnotations.filter((annotation) => annotation.label === label.id).length}</em>{label.key ? <kbd>{label.key}</kbd> : <span />}</button><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button><button className="delete-label" disabled={isUnlabeled} title={isUnlabeled ? copy.unlabeledProtected : copy.deleteClass} aria-label={`${copy.deleteClass}: ${label.name}`} onClick={() => requestClassDeletion([label.id])}><Trash2 size={13} /></button></div>; })}</div>
           {selectedIds.length > 0 && <section className="batch-class"><div><Tags size={14} /><span><b>{selectedIds.length} {copy.batchSelection}</b><small>{copy.changeClass}</small></span></div><div><select aria-label={copy.changeClass} value={resolvedBatchLabel} onChange={(event) => setBatchLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.id === UNLABELED_ID ? copy.unlabeled : label.name}</option>)}</select><button onClick={reclassifySelection}>{copy.applyClass}</button></div></section>}
           <div className="instances"><div><b>{copy.annotations} · {currentAnnotations.length}</b><MoreHorizontal size={16} /></div>{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); return <div key={annotation.id} className={`instance-row ${multiSelected.includes(annotation.id) ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
         </div> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>{copy.goodConsistency}</span></div><article className="warn"><b>!</b><div><strong>{copy.possibleOverlap}</strong><p>{copy.overlapText}</p></div></article><article><b>✓</b><div><strong>{copy.validClasses}</strong><p>{copy.validClassesText}</p></div></article><article><b>✓</b><div><strong>{copy.noEmpty}</strong><p>{copy.noEmptyText}</p></div></article><button onClick={() => { setQuality(false); setSelected(visibleAnnotations[0]?.id ?? null); setMultiSelected(visibleAnnotations[0] ? [visibleAnnotations[0].id] : []); }}>{copy.review}</button></div>}
@@ -952,6 +975,7 @@ export default function Home() {
       </aside>
     </div>
 
+    {pendingDeleteClasses.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-class-title" aria-describedby="delete-class-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-class-title">{pendingDeleteClasses.length === 1 ? copy.confirmDeleteClass : copy.confirmDeleteClasses}</h2><p>{pendingDeleteClasses.map((label) => label.name).join(", ")}</p></div></div><button onClick={() => setPendingDeleteClassIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-class-description" className="delete-class-warning">{copy.deleteClassWarning} <strong>{copy.unlabeled}</strong>.</p><div className="delete-class-impact"><span>{copy.affectedAnnotations}</span><b>{pendingAffectedAnnotations}</b></div><footer><button onClick={() => setPendingDeleteClassIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingClasses}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
     {preferencesOpen && <div className="modal-backdrop"><section className="sam-modal preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title"><header><div><span><Settings2 size={18} /></span><div><h2 id="preferences-title">{copy.preferences}</h2><p>VisionLabel</p></div></div><button onClick={() => setPreferencesOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="preferences-tabs"><button className={preferencesTab === "appearance" ? "active" : ""} onClick={() => setPreferencesTab("appearance")}><Sun size={14} />{copy.appearance}</button><button className={preferencesTab === "language" ? "active" : ""} onClick={() => setPreferencesTab("language")}><Languages size={14} />{copy.language}</button></div>{preferencesTab === "appearance" ? <div className="preference-options"><button className={themeMode === "system" ? "active" : ""} onClick={() => setThemeMode("system")}><Monitor size={20} /><b>{copy.system}</b></button><button className={themeMode === "light" ? "active" : ""} onClick={() => setThemeMode("light")}><Sun size={20} /><b>{copy.light}</b></button><button className={themeMode === "dark" ? "active" : ""} onClick={() => setThemeMode("dark")}><Moon size={20} /><b>{copy.dark}</b></button></div> : <div className="language-options"><button className={language === "pt" ? "active" : ""} onClick={() => setLanguage("pt")}><b>Português</b><span>PT-BR</span></button><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}><b>English</b><span>EN</span></button><button className={language === "fr" ? "active" : ""} onClick={() => setLanguage("fr")}><b>Français</b><span>FR</span></button><button className={language === "es" ? "active" : ""} onClick={() => setLanguage("es")}><b>Español</b><span>ES</span></button></div>}<footer><button className="connect" onClick={() => setPreferencesOpen(false)}><Check size={15} /> {copy.close}</button></footer></section></div>}
     {samOpen && <div className="modal-backdrop"><section className="sam-modal sam-local-modal" role="dialog" aria-modal="true" aria-labelledby="sam-title"><header><div><span><WandSparkles size={18} /></span><div><h2 id="sam-title">{copy.samTitle}</h2><p>{copy.samSubtitle}</p></div></div><button onClick={() => setSamOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="hardware-warning"><b>{copy.beforeRun}</b><p><strong>Recomendado — ViT-B:</strong> GPU NVIDIA com 6 GB de VRAM (8 GB ideal) ou CPU com 4+ núcleos e 16 GB de RAM. Em CPU funciona, mas o carregamento da imagem pode levar dezenas de segundos.</p><p><strong>ViT-L / ViT-H:</strong> prefira 12–16 GB de VRAM e 32 GB de RAM. São checkpoints maiores e mais lentos.</p></div><div className="sam-setup"><b>{copy.quickSetup}</b><ol><li><a href="https://github.com/facebookresearch/segment-anything#model-checkpoints" target="_blank" rel="noreferrer"><Download size={13} /> {copy.checkpointPage}</a><small>Escolha <strong>ViT-B</strong> na seção Model Checkpoints.</small></li><li><a href="/visionlabel-sam-local.py" download><Download size={13} /> {copy.connectorDownload}</a></li><li>Instale as dependências e execute o conector apontando para o <code>.pth</code>.</li></ol><pre>pip install torch torchvision fastapi uvicorn pillow opencv-python</pre><pre>pip install git+https://github.com/facebookresearch/segment-anything.git</pre><pre>python visionlabel-sam-local.py --checkpoint sam_vit_b_01ec64.pth --model-type vit_b</pre></div><label>{copy.localAddress}<input autoFocus type="url" placeholder="http://127.0.0.1:7860/predict" value={samEndpointDraft} onChange={(event) => setSamEndpointDraft(event.target.value)} /></label><div className="sam-contract"><b>{copy.noUpload}</b><p>O Site conversa apenas com o conector em <code>localhost</code>. Seu navegador poderá pedir permissão para acessar a rede local. Nenhum token é usado ou armazenado.</p></div><footer><button onClick={() => setSamOpen(false)}>{copy.cancel}</button><button className="connect" onClick={() => void connectSam()}><Link2 size={15} /> {copy.verifyUse}</button></footer></section></div>}
     {(leftOpen || rightOpen) && <button className="backdrop" onClick={() => { setLeftOpen(false); setRightOpen(false); }} aria-label="Fechar painel" />}
