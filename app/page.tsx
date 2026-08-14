@@ -903,7 +903,31 @@ export default function Home() {
 
   function requestOpenProject() {
     if (!saved && !window.confirm(copy.replaceUnsavedProject)) return;
-    openProjectInputRef.current?.click();
+    const picker = openProjectInputRef.current;
+    if (!picker) return;
+    picker.value = "";
+    try {
+      if (typeof picker.showPicker === "function") picker.showPicker();
+      else picker.click();
+    } catch { picker.click(); }
+  }
+
+  function requestNewProject() {
+    if (!saved && !window.confirm(copy.replaceUnsavedWithNewProject)) return;
+    projectObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+    projectObjectUrlsRef.current = [];
+    if (input.current) input.current.value = "";
+    if (openProjectInputRef.current) openProjectInputRef.current.value = "";
+    idCounter.current = 0;
+    setProjectName(copy.newProject); setProjectNameDraft("");
+    setAssets([]); setCurrent(""); setAnnotations([]); setLabels([unlabeledLabel(copy.unlabeled)]);
+    setActiveLabel(UNLABELED_ID); setBatchLabel(UNLABELED_ID); setHistory([]);
+    setSelected(null); setMultiSelected([]); setSelectedVertex(null); setSelectedClassIds([]);
+    setPendingDeleteAnnotationIds([]); setPendingDeleteClassIds([]); setHiddenAnnotations([]); setHiddenLabels([]);
+    setSearch(""); setQuality(false); setTool("select"); setZoom(92); resetDrafts();
+    setProjectOpen(false); setProjectEditing(false); setProjectSaveOpen(false); setExportOpen(false);
+    setClassManagerOpen(false); setLeftOpen(false); setRightOpen(false); setSaved(true);
+    showToast(copy.newProjectReady);
   }
 
   async function loadProjectFile(file: File) {
@@ -1024,7 +1048,23 @@ export default function Home() {
   return <main className="shell">
     <header className="topbar">
       <input hidden ref={openProjectInputRef} type="file" accept=".visionlabel,application/zip,application/vnd.visionlabel.project+zip" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void loadProjectFile(file); }} />
-      <div className="brand-side"><button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button><div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i /><div className="project-switcher" ref={projectSwitcherRef}><button className={`project ${projectOpen ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={projectOpen} onClick={() => { setProjectOpen((value) => !value); setProjectEditing(false); }}><em />{projectName} <ChevronDown size={14} /></button>{projectOpen && <section className="project-pop" role="dialog" aria-label={copy.projectCurrent}><p>{copy.projectCurrent}</p>{projectEditing ? <div className="project-rename"><input ref={projectInputRef} value={projectNameDraft} onChange={(event) => setProjectNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveProjectName(); if (event.key === "Escape") setProjectEditing(false); }} /><button onClick={saveProjectName}><Check size={14} />{copy.save}</button></div> : <><div className="project-summary"><span><em />{projectName}</span><small>{assets.length} {copy.projectImages} · {annotations.length} {copy.projectAnnotations}</small></div><button onClick={requestOpenProject}><FolderUp size={14} /><span><b>{copy.openProject}</b><small>{copy.openProjectHint}</small></span></button><button onClick={openSaveProjectDialog}><Save size={14} /><span><b>{copy.saveProject}</b><small>{copy.saveProjectHint}</small></span></button><button onClick={beginProjectRename}><Pencil size={14} /><span><b>{copy.renameProject}</b><small>{projectName}</small></span></button><button onClick={() => { setProjectOpen(false); setLeftOpen(true); }}><FolderOpen size={14} /><span><b>{copy.viewImages}</b><small>{assets.length} {copy.projectImages}</small></span></button></>}</section>}</div></div>
+      <div className="brand-side">
+        <button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button>
+        <div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i />
+        <div className="project-switcher" ref={projectSwitcherRef}>
+          <button className={`project ${projectOpen ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={projectOpen} onClick={() => { setProjectOpen((value) => !value); setProjectEditing(false); }}><em />{projectName} <ChevronDown size={14} /></button>
+          {projectOpen && <section className="project-pop" role="dialog" aria-label={copy.projectCurrent}>
+            <p>{copy.projectCurrent}</p>
+            {projectEditing ? <div className="project-rename"><input ref={projectInputRef} value={projectNameDraft} onChange={(event) => setProjectNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveProjectName(); if (event.key === "Escape") setProjectEditing(false); }} /><button onClick={saveProjectName}><Check size={14} />{copy.save}</button></div> : <>
+              <div className="project-summary"><span><em />{projectName}</span><small>{assets.length} {copy.projectImages} · {annotations.length} {copy.projectAnnotations}</small></div>
+              <button onClick={requestNewProject}><Plus size={14} /><span><b>{copy.newProject}</b><small>{copy.newProjectHint}</small></span></button>
+              <button onClick={requestOpenProject}><FolderUp size={14} /><span><b>{copy.openProject}</b><small>{copy.openProjectHint}</small></span></button>
+              <button onClick={openSaveProjectDialog}><Save size={14} /><span><b>{copy.saveProject}</b><small>{copy.saveProjectHint}</small></span></button>
+              <button onClick={beginProjectRename}><Pencil size={14} /><span><b>{copy.renameProject}</b><small>{projectName}</small></span></button>
+            </>}
+          </section>}
+        </div>
+      </div>
       <div className="head-actions"><span className={`save ${saved ? "done" : ""}`}><HardDriveDownload size={14} />{saved ? copy.saved : copy.saving}</span><button className="open-project-main" disabled={projectBusy} onClick={requestOpenProject}><FolderUp size={15} /><span>{copy.openProject}</span></button><button className="project-save-main" disabled={projectBusy} onClick={openSaveProjectDialog}>{projectBusy ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}<span>{copy.saveProject}</span></button><button className={`sam-connection ${samEndpoint ? "connected" : ""}`} onClick={openSamSettings}><Link2 size={14} />{samEndpoint ? copy.samActive : copy.activateSam}</button><div className="export"><button className="export-main" disabled={exporting || projectBusy} onClick={() => setExportOpen(!exportOpen)}>{exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {copy.export} <ChevronDown size={13} /></button>{exportOpen && <div className="export-pop"><p>{copy.exportFormat}</p><button onClick={() => void exportData("coco")}><b>COCO JSON</b><span>{copy.cocoDesc}</span></button><button onClick={() => void exportData("yolo")}><b>YOLO ZIP</b><span>{copy.yoloDesc}</span></button><button onClick={() => void exportData("project")}><b>VisionLabel</b><span>{copy.projectBackup}</span></button></div>}</div><button className="preferences-button" title={copy.preferences} aria-label={copy.preferences} onClick={() => setPreferencesOpen(true)}><Languages size={17} /></button><span className="local-mode" title={copy.localOnlyHint}><ShieldCheck size={14} />{copy.localOnly}</span><button className="mobile" onClick={() => setRightOpen(true)} aria-label={copy.classes}><MoreHorizontal size={19} /></button></div>
     </header>
 
