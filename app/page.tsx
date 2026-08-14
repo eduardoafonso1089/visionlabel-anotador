@@ -22,68 +22,9 @@ import { requestSamMask } from "./lib/sam";
 import type { Language, ThemeMode } from "./lib/i18n";
 import type { Annotation, Asset, Label, SamPrompt, Tool } from "./lib/types";
 
-const demoAssets: Asset[] = [
-  { id: "i1", name: "talhao_07_001.jpg", src: "https://images.unsplash.com/photo-1495107334309-fcf20504a5ab?auto=format&fit=crop&w=1600&q=88", width: 1600, height: 1040 },
-  { id: "i2", name: "talhao_07_002.jpg", src: "https://images.unsplash.com/photo-1530836369250-ef72a3f5cda8?auto=format&fit=crop&w=1600&q=88", width: 1600, height: 1040 },
-  { id: "i3", name: "talhao_07_003.jpg", src: "https://images.unsplash.com/photo-1501004318641-b39e6451bec6?auto=format&fit=crop&w=1600&q=88", width: 1600, height: 1040 },
-  { id: "i4", name: "talhao_07_004.jpg", src: "https://images.unsplash.com/photo-1574323347407-f5e1ad6d020b?auto=format&fit=crop&w=1600&q=88", width: 1600, height: 1040 },
-];
-
-const startLabels: Label[] = [
-  { id: "weed", name: "erva daninha", color: "#ff6b4a", key: "1" },
-  { id: "crop", name: "cultura", color: "#a8e063", key: "2" },
-  { id: "soil", name: "solo exposto", color: "#ffc857", key: "3" },
-];
-
 const UNLABELED_ID = "unlabeled";
 const UNLABELED_COLOR = "#929a95";
 const unlabeledLabel = (name = "Sem label"): Label => ({ id: UNLABELED_ID, name, color: UNLABELED_COLOR, key: "" });
-
-function normalizeLabels(labels: Label[]) {
-  const usedIds = new Set<string>();
-  const usedKeys = new Set<string>();
-  return labels.map((label, index) => {
-    const baseId = typeof label.id === "string" && label.id.trim() ? label.id : `restored-label-${index + 1}`;
-    let id = baseId;
-    let suffix = 2;
-    while (usedIds.has(id)) { id = `${baseId}-restored-${suffix}`; suffix += 1; }
-    usedIds.add(id);
-    const key = label.key && !usedKeys.has(label.key) ? label.key : "";
-    if (key) usedKeys.add(key);
-    return { ...label, id, key };
-  });
-}
-
-function loadInitialLabels() {
-  if (typeof window === "undefined") return startLabels;
-  try {
-    const storedLabels = JSON.parse(localStorage.getItem("visionlabel-labels") ?? "null");
-    const labels = normalizeLabels(Array.isArray(storedLabels) && storedLabels.length ? storedLabels as Label[] : startLabels);
-    const storedAnnotations = JSON.parse(localStorage.getItem("visionlabel-annotations") ?? "null");
-    const annotations = Array.isArray(storedAnnotations) ? storedAnnotations as Annotation[] : startAnnotations;
-    const validIds = new Set(labels.map((label) => label.id));
-    return annotations.some((annotation) => !validIds.has(annotation.label)) && !validIds.has(UNLABELED_ID)
-      ? [...labels, unlabeledLabel()]
-      : labels;
-  } catch { return startLabels; }
-}
-
-function loadInitialAnnotations() {
-  if (typeof window === "undefined") return startAnnotations;
-  try {
-    const stored = JSON.parse(localStorage.getItem("visionlabel-annotations") ?? "null");
-    const annotations = Array.isArray(stored) ? stored as Annotation[] : startAnnotations;
-    const validIds = new Set(loadInitialLabels().map((label) => label.id));
-    return annotations.map((annotation) => validIds.has(annotation.label) ? annotation : { ...annotation, label: UNLABELED_ID });
-  } catch { return startAnnotations; }
-}
-
-const startAnnotations: Annotation[] = [
-  { id: "a1", asset: "i1", label: "weed", type: "box", x: 150, y: 215, w: 210, h: 195 },
-  { id: "a2", asset: "i1", label: "crop", type: "polygon", pts: [465, 130, 650, 92, 780, 215, 728, 448, 545, 498, 412, 344] },
-  { id: "a3", asset: "i1", label: "soil", type: "point", x: 815, y: 470 },
-  { id: "a4", asset: "i2", label: "crop", type: "box", x: 242, y: 120, w: 474, h: 376 },
-];
 
 const colors = ["#6c8cff", "#d987ff", "#26c6b6", "#ff8a65"];
 
@@ -117,14 +58,11 @@ function formatBytes(bytes: number) {
 
 export default function Home() {
   const [mounted, setMounted] = useState(false);
-  const [assets, setAssets] = useState(demoAssets);
-  const [current, setCurrent] = useState("i1");
-  const [labels, setLabels] = useState<Label[]>(loadInitialLabels);
-  const [activeLabel, setActiveLabel] = useState(() => {
-    const initialLabels = loadInitialLabels();
-    return initialLabels.some((label) => label.id === "weed") ? "weed" : initialLabels[0]?.id ?? UNLABELED_ID;
-  });
-  const [annotations, setAnnotations] = useState<Annotation[]>(loadInitialAnnotations);
+  const [assets, setAssets] = useState<Asset[]>([]);
+  const [current, setCurrent] = useState("");
+  const [labels, setLabels] = useState<Label[]>(() => [unlabeledLabel()]);
+  const [activeLabel, setActiveLabel] = useState(UNLABELED_ID);
+  const [annotations, setAnnotations] = useState<Annotation[]>([]);
   const [history, setHistory] = useState<Annotation[][]>([]);
   const [tool, setTool] = useState<Tool>("select");
   const [selected, setSelected] = useState<string | null>(null);
@@ -157,15 +95,12 @@ export default function Home() {
   const [saved, setSaved] = useState(true);
   const [newLabel, setNewLabel] = useState("");
   const [newLabelColor, setNewLabelColor] = useState(colors[0]);
-  const [batchLabel, setBatchLabel] = useState(() => {
-    const initialLabels = loadInitialLabels();
-    return initialLabels.some((label) => label.id === "weed") ? "weed" : initialLabels[0]?.id ?? UNLABELED_ID;
-  });
+  const [batchLabel, setBatchLabel] = useState(UNLABELED_ID);
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectEditing, setProjectEditing] = useState(false);
-  const [projectName, setProjectName] = useState(() => typeof window === "undefined" ? "Ervas daninhas — Talhão 07" : localStorage.getItem("visionlabel-project-name") || "Ervas daninhas — Talhão 07");
+  const [projectName, setProjectName] = useState("Novo projeto");
   const [projectNameDraft, setProjectNameDraft] = useState("");
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [classManagerOpen, setClassManagerOpen] = useState(false);
@@ -864,9 +799,7 @@ export default function Home() {
       if (target) replacements.set(target.id, { ...target, src, local: true, missing: false, byteSize: file.size });
       else incoming.push({ id: `${uploadId}-${index}`, name: file.name, src, local: true, byteSize: file.size });
     });
-    const untouchedDemo = assets.length === demoAssets.length && assets.every((item) => demoAssets.some((demo) => demo.id === item.id)) && annotations.length === startAnnotations.length && annotations.every((item) => startAnnotations.some((demo) => demo.id === item.id));
-    if (untouchedDemo) { setAssets(incoming); setAnnotations([]); setHistory([]); }
-    else setAssets((items) => [...incoming, ...items.map((item) => replacements.get(item.id) ?? item)]);
+    setAssets((items) => [...incoming, ...items.map((item) => replacements.get(item.id) ?? item)]);
     const nextCurrent = replacements.values().next().value?.id ?? incoming[0]?.id;
     if (nextCurrent) setCurrent(nextCurrent);
     setSaved(false); setLeftOpen(false);
@@ -993,6 +926,11 @@ export default function Home() {
   }
 
   function openSaveProjectDialog() {
+    if (!assets.length) {
+      setLeftOpen(true);
+      showToast(copy.emptyProjectHint);
+      return;
+    }
     setProjectSaveMode(missingProjectImages ? "annotations" : "complete");
     setExportOpen(false); setProjectOpen(false); setProjectSaveOpen(true);
   }
@@ -1010,6 +948,7 @@ export default function Home() {
   }
 
   async function exportData(kind: "coco" | "yolo" | "project") {
+    if (!assets.length) { setExportOpen(false); setLeftOpen(true); showToast(copy.emptyProjectHint); return; }
     if (kind === "project") { openSaveProjectDialog(); return; }
     setExporting(true);
     try {
@@ -1074,7 +1013,11 @@ export default function Home() {
   function clearSam() { samRequestRef.current += 1; setSamPrompts([]); setSamPreview([]); setSamLoading(false); }
   function restartSam() { clearSam(); setSamPromptMode(1); showToast(copy.samRestarted); }
   function chooseImage(id: string) { setCurrent(id); setSelected(null); setMultiSelected([]); setSelectedVertex(null); resetDrafts(); setLeftOpen(false); }
-  function go(direction: number) { const index = assets.findIndex((item) => item.id === current); chooseImage(assets[Math.max(0, Math.min(assets.length - 1, index + direction))].id); }
+  function go(direction: number) {
+    if (!assets.length) return;
+    const index = Math.max(0, assets.findIndex((item) => item.id === current));
+    chooseImage(assets[Math.max(0, Math.min(assets.length - 1, index + direction))].id);
+  }
 
   if (!mounted) return <main className="shell app-loading" aria-busy="true"><div className="loading-card"><span className="mark"><Pentagon size={18} /></span><b>vision<span>label</span></b></div></main>;
 
@@ -1092,7 +1035,7 @@ export default function Home() {
         <input hidden ref={input} type="file" accept="image/*" multiple onChange={(event) => files(event.target.files)} />
         <button className="import" onClick={() => input.current?.click()}><ImagePlus size={16} /> {copy.importImages}</button>
         <label className="search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={copy.searchImage} /></label>
-        <div className="progress"><div><span>{copy.progress}</span><b>{completed} {copy.of} {assets.length}</b></div><i><em style={{ width: `${completed / assets.length * 100}%` }} /></i></div>
+        <div className="progress"><div><span>{copy.progress}</span><b>{completed} {copy.of} {assets.length}</b></div><i><em style={{ width: `${assets.length ? completed / assets.length * 100 : 0}%` }} /></i></div>
         <div className="asset-list">{assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item, index) => { const count = annotations.filter((annotation) => annotation.asset === item.id).length; return <button key={item.id} className={`${current === item.id ? "active" : ""} ${item.missing ? "missing" : ""}`} onClick={() => chooseImage(item.id)}><div className="thumb" style={{ backgroundImage: item.src ? `url(${item.src})` : "none" }}><span>{String(index + 1).padStart(2, "0")}</span>{count > 0 && <b>{count}</b>}</div><div><strong>{item.name}</strong><small>{item.missing ? copy.imageNotLoaded : item.width && item.height ? `${item.width} × ${item.height}` : copy.localImage}</small></div><i className={count ? "checked" : ""}>{count ? "✓" : ""}</i></button>; })}</div>
         <div className="privacy"><ShieldCheck size={14} /> {copy.privacy}</div>
       </aside>
@@ -1106,7 +1049,7 @@ export default function Home() {
           <label className="stroke-control" title={copy.lineThickness}><PenLine size={14} /><input aria-label={copy.lineThickness} type="range" min="1" max="10" step="1" value={lineThickness} onChange={(event) => setLineThickness(Number(event.target.value))} /><output>{lineThickness}px</output></label><div className="zoom" title={copy.shiftZoom}><button aria-label={copy.zoomOut} onClick={() => setZoom((value) => Math.max(10, value - 10))}><ZoomOut size={15} /></button><span>{zoom}%</span><button aria-label={copy.zoomIn} onClick={() => setZoom((value) => Math.min(400, value + 10))}><ZoomIn size={15} /></button></div><ToolButton title={copy.fitImage} onClick={fitImageToViewport}><Focus size={16} /></ToolButton>
         </div>
 
-        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const projectFile = Array.from(event.dataTransfer.files).find((file) => file.name.toLowerCase().endsWith(".visionlabel")); if (projectFile) { if (saved || window.confirm(copy.replaceUnsavedProject)) void loadProjectFile(projectFile); } else files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}><div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
+        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const projectFile = Array.from(event.dataTransfer.files).find((file) => file.name.toLowerCase().endsWith(".visionlabel")); if (projectFile) { if (saved || window.confirm(copy.replaceUnsavedProject)) void loadProjectFile(projectFile); } else files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}>{asset ? <div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           {asset.missing ? <div className="missing-image"><Images size={34} /><b>{asset.name}</b><p>{copy.imageMissingHint}</p><button onClick={() => input.current?.click()}><FolderOpen size={15} />{copy.reloadProjectImages}</button></div> : <img crossOrigin="anonymous" src={asset.src} alt={`Imagem para anotação: ${asset.name}`} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (asset.width !== image.naturalWidth || asset.height !== image.naturalHeight) setAssets((items) => items.map((item) => item.id === asset.id ? { ...item, width: image.naturalWidth, height: image.naturalHeight } : item)); }} />}
           <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onAuxClick={(event) => event.preventDefault()} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => tool === "polygon" && finishPolygon()}>
@@ -1141,8 +1084,8 @@ export default function Home() {
           {tool === "reshape" && <div className="tip">{reshapeDrawing ? (reshapeStartInside ? copy.reshapeAdd : copy.reshapeDelete) : copy.reshapeStart}</div>}
           {activeAnnotation?.type === "polygon" && tool === "select" && <div className="polygon-tip">{copy.middlePan} · nó + Delete remove em sequência · corpo + Delete apaga tudo</div>}
           {tool === "sam" && <div className="sam-controls"><div><button className={samPromptMode === 1 ? "active positive" : ""} onClick={() => setSamPromptMode(1)}><CirclePlus size={15} />{copy.samInclude}</button><button className={samPromptMode === 0 ? "active negative" : ""} onClick={() => setSamPromptMode(0)}><CircleMinus size={15} />{copy.samExclude}</button></div><span>{samLoading ? <><LoaderCircle className="spin" size={14} />{copy.samSegmenting}</> : `${samPrompts.length} ${copy.samPoints}`}</span><div><button disabled={!samPrompts.length && !samPreview.length && !samLoading} onClick={restartSam}><ListRestart size={14} />{copy.samRestart}</button><button className="accept" disabled={samPreview.length < 6 || samLoading} onClick={acceptSamMask}><Check size={14} />{copy.samSaveEdit}</button><button aria-label={copy.samConfigure} onClick={openSamSettings}><Settings2 size={15} /></button></div></div>}
-        </div></div></div>
-        <div className="status"><div><button onClick={() => go(-1)} disabled={assets[0].id === current}><ChevronLeft size={16} /></button><span><b>{assets.findIndex((item) => item.id === current) + 1}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{annotationDrag ? `${copy.moving} (${annotationDrag.originals.length})` : selectionMarquee ? copy.selecting : transformDrag ? copy.transforming : reshapeDrawing ? copy.reshaping : selectedVertex ? `Nó selecionado — encaixe ${snapping ? "ativo" : "inativo"}` : polygonDraft.length ? `${polygonDraft.length / 2} ponto(s) — Delete desfaz na ordem de criação` : multiSelected.length > 1 ? `${multiSelected.length} ${copy.selectedObjects}` : currentAnnotations.length ? `${currentAnnotations.length} ${copy.imageAnnotations}` : copy.ready}</p><button><Keyboard size={15} /> {copy.shortcuts}</button></div>
+        </div> : <div className="empty-project"><span><Images size={30} /></span><h2>{copy.emptyProjectTitle}</h2><p>{copy.emptyProjectHint}</p><div><button className="primary" onClick={() => input.current?.click()}><ImagePlus size={16} />{copy.importImages}</button><button onClick={requestOpenProject}><FolderUp size={16} />{copy.openProject}</button></div><small>{copy.privacy}</small></div>}</div></div>
+        <div className="status"><div><button onClick={() => go(-1)} disabled={!asset || assets[0]?.id === current}><ChevronLeft size={16} /></button><span><b>{asset ? assets.findIndex((item) => item.id === current) + 1 : 0}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={!asset || assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{annotationDrag ? `${copy.moving} (${annotationDrag.originals.length})` : selectionMarquee ? copy.selecting : transformDrag ? copy.transforming : reshapeDrawing ? copy.reshaping : selectedVertex ? `Nó selecionado — encaixe ${snapping ? "ativo" : "inativo"}` : polygonDraft.length ? `${polygonDraft.length / 2} ponto(s) — Delete desfaz na ordem de criação` : multiSelected.length > 1 ? `${multiSelected.length} ${copy.selectedObjects}` : currentAnnotations.length ? `${currentAnnotations.length} ${copy.imageAnnotations}` : asset ? copy.ready : copy.emptyProjectTitle}</p><button><Keyboard size={15} /> {copy.shortcuts}</button></div>
       </section>
 
       <aside className={`labels ${rightOpen ? "open" : ""}`}>
