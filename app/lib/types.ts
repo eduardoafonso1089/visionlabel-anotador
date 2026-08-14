@@ -22,6 +22,8 @@ export type Asset = {
   name: string;
   src: string;
   local?: boolean;
+  missing?: boolean;
+  byteSize?: number;
   width?: number;
   height?: number;
 };

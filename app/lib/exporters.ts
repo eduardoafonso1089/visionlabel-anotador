@@ -21,23 +21,6 @@ export function downloadBlob(name: string, blob: Blob) {
   }, 1500);
 }
 
-export function exportProject(assets: Asset[], labels: Label[], annotations: Annotation[]) {
-  const payload = {
-    version: 1,
-    exported_at: new Date().toISOString(),
-    assets: assets.map(({ src, ...asset }) => ({
-      ...asset,
-      source: src.startsWith("blob:") ? "local" : src,
-    })),
-    labels,
-    annotations,
-  };
-  downloadBlob(
-    "visionlabel-project.json",
-    new Blob([JSON.stringify(payload, null, 2)], { type: "application/json;charset=utf-8" }),
-  );
-}
-
 export function exportCoco(assets: Asset[], labels: Label[], annotations: Annotation[]) {
   const images = assets.map((asset, index) => ({
     id: index + 1,

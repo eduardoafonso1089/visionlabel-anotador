@@ -2,8 +2,8 @@
 
 import {
   Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
-  Cloud, Combine, Copy, Download, Eye, EyeOff, FolderOpen, Hand, ImagePlus, Keyboard, Languages, Link2,
-  Focus, ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine,
+  Combine, Copy, Download, Eye, EyeOff, FileText, FolderOpen, FolderUp, Hand, HardDriveDownload, ImagePlus, Images, Keyboard, Languages, Link2,
+  Focus, ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine, Save, ShieldCheck,
   Monitor, Moon, Palette, Pencil, Pentagon, Plus, Power, Redo2, Scissors, Search, Settings2, Sparkles,
   Sun, Tags, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
 } from "lucide-react";
@@ -14,8 +14,10 @@ import {
   polygonBounds, polygonCenter, reshapePolygon, simplifyPolygon, snapPointToPolygons,
   splitPolygon, transformPolygon, translateAnnotation, unionPolygons, updatePolygonVertex,
 } from "./lib/geometry";
-import { exportCoco, exportProject, exportYoloZip } from "./lib/exporters";
+import { exportCoco, exportYoloZip } from "./lib/exporters";
 import { getCopy } from "./lib/i18n";
+import { openVisionLabelProject, saveVisionLabelProject } from "./lib/project";
+import type { ProjectSaveMode } from "./lib/project";
 import { requestSamMask } from "./lib/sam";
 import type { Language, ThemeMode } from "./lib/i18n";
 import type { Annotation, Asset, Label, SamPrompt, Tool } from "./lib/types";
@@ -107,6 +109,12 @@ function polygonHandleRadius(vertexCount: number, zoomScale: number) {
   return Math.max(2.4, Math.min(5.2, 25 / Math.sqrt(Math.max(1, vertexCount)))) * zoomScale;
 }
 
+function formatBytes(bytes: number) {
+  if (!bytes) return "—";
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
+  return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
 export default function Home() {
   const [mounted, setMounted] = useState(false);
   const [assets, setAssets] = useState(demoAssets);
@@ -143,6 +151,9 @@ export default function Home() {
   const [quality, setQuality] = useState(false);
   const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
+  const [projectBusy, setProjectBusy] = useState(false);
+  const [projectSaveOpen, setProjectSaveOpen] = useState(false);
+  const [projectSaveMode, setProjectSaveMode] = useState<ProjectSaveMode>("complete");
   const [saved, setSaved] = useState(true);
   const [newLabel, setNewLabel] = useState("");
   const [newLabelColor, setNewLabelColor] = useState(colors[0]);
@@ -198,6 +209,7 @@ export default function Home() {
   const [samPreview, setSamPreview] = useState<number[]>([]);
   const [samLoading, setSamLoading] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const openProjectInputRef = useRef<HTMLInputElement>(null);
   const labelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
   const projectSwitcherRef = useRef<HTMLDivElement>(null);
@@ -209,6 +221,7 @@ export default function Home() {
   const transformDragRef = useRef<TransformDrag | null>(null);
   const reshapeTargetRef = useRef<string | null>(null);
   const samRequestRef = useRef(0);
+  const projectObjectUrlsRef = useRef<string[]>([]);
   const idCounter = useRef(0);
 
   const asset = assets.find((item) => item.id === current) ?? assets[0];
@@ -243,6 +256,9 @@ export default function Home() {
   const pendingDeleteClasses = labels.filter((label) => pendingDeleteClassIds.includes(label.id));
   const pendingAffectedAnnotations = annotations.filter((annotation) => pendingDeleteClassIds.includes(annotation.label)).length;
   const pendingDeleteAnnotations = annotations.filter((annotation) => pendingDeleteAnnotationIds.includes(annotation.id));
+  const missingProjectImages = assets.filter((item) => item.missing).length;
+  const knownProjectImageBytes = assets.reduce((total, item) => total + (item.byteSize ?? 0), 0);
+  const annotationProjectBytes = JSON.stringify({ assets: assets.map((item) => ({ id: item.id, name: item.name, width: item.width, height: item.height })), labels, annotations }).length;
   const selectedPolygons = annotations.filter((annotation) => multiSelected.includes(annotation.id) && annotation.type === "polygon");
   const getLabel = useCallback((id: string) => labels.find((label) => label.id === id) ?? labels[0] ?? unlabeledLabel(copy.unlabeled), [copy.unlabeled, labels]);
   const completed = useMemo(() => new Set(annotations.map((annotation) => annotation.asset)).size, [annotations]);
@@ -265,12 +281,21 @@ export default function Home() {
   }, [lineThickness]);
 
   useEffect(() => {
-    localStorage.setItem("visionlabel-labels", JSON.stringify(labels));
-  }, [labels]);
+    localStorage.removeItem("visionlabel-labels");
+    localStorage.removeItem("visionlabel-annotations");
+    localStorage.removeItem("visionlabel-project-name");
+  }, []);
+
+  useEffect(() => () => {
+    projectObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+  }, []);
 
   useEffect(() => {
-    localStorage.setItem("visionlabel-project-name", projectName);
-  }, [projectName]);
+    if (saved) return;
+    const warnBeforeClose = (event: BeforeUnloadEvent) => { event.preventDefault(); event.returnValue = ""; };
+    window.addEventListener("beforeunload", warnBeforeClose);
+    return () => window.removeEventListener("beforeunload", warnBeforeClose);
+  }, [saved]);
 
   useEffect(() => {
     const closeProjectMenu = (event: PointerEvent) => {
@@ -339,21 +364,12 @@ export default function Home() {
   }, [polygonDraft, remember, current, activeLabel]);
 
   useEffect(() => {
-    if (saved) return;
-    const timeout = window.setTimeout(() => {
-      localStorage.setItem("visionlabel-annotations", JSON.stringify(annotations));
-      setSaved(true);
-    }, 500);
-    return () => clearTimeout(timeout);
-  }, [annotations, saved]);
-
-  useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if ((event.target as HTMLElement).tagName === "INPUT") return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); return; }
       if (event.key === "Enter" && tool === "polygon") finishPolygon();
       if (event.key === "Escape") {
-        setProjectOpen(false); setProjectEditing(false); setClassManagerOpen(false); setSelectedClassIds([]);
+        setProjectOpen(false); setProjectEditing(false); setProjectSaveOpen(false); setClassManagerOpen(false); setSelectedClassIds([]);
         setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
         setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
         annotationDragRef.current = null; setAnnotationDrag(null);
@@ -831,8 +847,30 @@ export default function Home() {
 
   function files(list: FileList | null) {
     const uploadId = makeId("upload");
-    const incoming = Array.from(list ?? []).filter((file) => file.type.startsWith("image/")).map((file, index) => ({ id: `${uploadId}-${index}`, name: file.name, src: URL.createObjectURL(file), local: true }));
-    if (!incoming.length) return; setAssets((items) => [...incoming, ...items]); setCurrent(incoming[0].id); setLeftOpen(false);
+    const imageFiles = Array.from(list ?? []).filter((file) => file.type.startsWith("image/"));
+    if (!imageFiles.length) return;
+    const missingByName = new Map<string, Asset[]>();
+    assets.filter((item) => item.missing).forEach((item) => {
+      const key = item.name.toLocaleLowerCase();
+      missingByName.set(key, [...(missingByName.get(key) ?? []), item]);
+    });
+    const replacements = new Map<string, Asset>();
+    const incoming: Asset[] = [];
+    imageFiles.forEach((file, index) => {
+      const src = URL.createObjectURL(file);
+      projectObjectUrlsRef.current.push(src);
+      const candidates = missingByName.get(file.name.toLocaleLowerCase()) ?? [];
+      const target = candidates.shift();
+      if (target) replacements.set(target.id, { ...target, src, local: true, missing: false, byteSize: file.size });
+      else incoming.push({ id: `${uploadId}-${index}`, name: file.name, src, local: true, byteSize: file.size });
+    });
+    const untouchedDemo = assets.length === demoAssets.length && assets.every((item) => demoAssets.some((demo) => demo.id === item.id)) && annotations.length === startAnnotations.length && annotations.every((item) => startAnnotations.some((demo) => demo.id === item.id));
+    if (untouchedDemo) { setAssets(incoming); setAnnotations([]); setHistory([]); }
+    else setAssets((items) => [...incoming, ...items.map((item) => replacements.get(item.id) ?? item)]);
+    const nextCurrent = replacements.values().next().value?.id ?? incoming[0]?.id;
+    if (nextCurrent) setCurrent(nextCurrent);
+    setSaved(false); setLeftOpen(false);
+    if (replacements.size) showToast(`${replacements.size} ${copy.projectImagesRestored}`);
   }
 
   function addClass() {
@@ -848,7 +886,7 @@ export default function Home() {
     const id = makeId("label");
     const key = Array.from({ length: 9 }, (_, index) => String(index + 1)).find((candidate) => !labels.some((label) => label.key === candidate)) ?? "";
     setLabels((items) => [...items, { id, name, color: newLabelColor, key }]);
-    setActiveLabel(id); setBatchLabel(id); setNewLabel("");
+    setActiveLabel(id); setBatchLabel(id); setNewLabel(""); setSaved(false);
     setNewLabelColor(colors[(labels.length + 1) % colors.length]);
     showToast(`${name} criada e selecionada.`);
     requestAnimationFrame(() => labelInputRef.current?.focus());
@@ -902,7 +940,7 @@ export default function Home() {
     if (deletedIds.has(activeLabel)) setActiveLabel(fallback?.id ?? UNLABELED_ID);
     if (deletedIds.has(batchLabel)) setBatchLabel(fallback?.id ?? UNLABELED_ID);
     setSelectedClassIds((items) => items.filter((id) => !deletedIds.has(id)));
-    setPendingDeleteClassIds([]);
+    setPendingDeleteClassIds([]); setSaved(false);
     showToast(reassignedCount
       ? `${deletedLabels.length} classe(s) excluída(s). ${reassignedCount} anotação(ões) foram movidas para ${copy.unlabeled}.`
       : `${deletedLabels.length} classe(s) excluída(s).`);
@@ -926,16 +964,57 @@ export default function Home() {
   function saveProjectName() {
     const name = projectNameDraft.trim();
     if (!name) return;
-    setProjectName(name); setProjectEditing(false); setProjectOpen(false);
+    setProjectName(name); setProjectEditing(false); setProjectOpen(false); setSaved(false);
     showToast("Nome do projeto atualizado.");
   }
 
+  function requestOpenProject() {
+    if (!saved && !window.confirm(copy.replaceUnsavedProject)) return;
+    openProjectInputRef.current?.click();
+  }
+
+  async function loadProjectFile(file: File) {
+    setProjectBusy(true);
+    try {
+      const loaded = await openVisionLabelProject(file);
+      projectObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
+      projectObjectUrlsRef.current = loaded.objectUrls;
+      const firstLabel = loaded.labels.find((label) => label.id !== UNLABELED_ID) ?? loaded.labels[0];
+      setProjectName(loaded.projectName); setAssets(loaded.assets); setAnnotations(loaded.annotations); setLabels(loaded.labels);
+      setCurrent(loaded.assets[0].id); setActiveLabel(firstLabel.id); setBatchLabel(firstLabel.id);
+      setHistory([]); setSelected(null); setMultiSelected([]); setSelectedVertex(null); setHiddenAnnotations([]); setHiddenLabels([]);
+      setSearch(""); setTool("select"); resetDrafts(); setProjectOpen(false); setLeftOpen(loaded.missingImages > 0); setSaved(true);
+      showToast(loaded.missingImages
+        ? `${copy.projectOpened}. ${loaded.missingImages} ${copy.projectImagesNeedReload}`
+        : `${copy.projectOpened}: ${file.name}`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : copy.projectOpenError);
+    } finally { setProjectBusy(false); }
+  }
+
+  function openSaveProjectDialog() {
+    setProjectSaveMode(missingProjectImages ? "annotations" : "complete");
+    setExportOpen(false); setProjectOpen(false); setProjectSaveOpen(true);
+  }
+
+  async function savePortableProject(mode: ProjectSaveMode) {
+    if (mode === "complete" && missingProjectImages) return;
+    setProjectBusy(true);
+    try {
+      const fileName = await saveVisionLabelProject(projectName, assets, labels, annotations, mode);
+      setSaved(true); setExportOpen(false); setProjectOpen(false); setProjectSaveOpen(false);
+      showToast(`${copy.projectSaved}: ${fileName}`);
+    } catch (error) {
+      showToast(error instanceof Error ? error.message : copy.projectSaveError);
+    } finally { setProjectBusy(false); }
+  }
+
   async function exportData(kind: "coco" | "yolo" | "project") {
+    if (kind === "project") { openSaveProjectDialog(); return; }
     setExporting(true);
     try {
       if (kind === "coco") exportCoco(assets, labels, annotations);
       if (kind === "yolo") await exportYoloZip(assets, labels, annotations);
-      if (kind === "project") exportProject(assets, labels, annotations);
       setExportOpen(false); showToast(kind === "yolo" ? "Pacote YOLO gerado e download iniciado." : "Arquivo gerado e download iniciado.");
     } catch { showToast("Não foi possível gerar a exportação."); }
     finally { setExporting(false); }
@@ -1001,8 +1080,9 @@ export default function Home() {
 
   return <main className="shell">
     <header className="topbar">
-      <div className="brand-side"><button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button><div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i /><div className="project-switcher" ref={projectSwitcherRef}><button className={`project ${projectOpen ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={projectOpen} onClick={() => { setProjectOpen((value) => !value); setProjectEditing(false); }}><em />{projectName} <ChevronDown size={14} /></button>{projectOpen && <section className="project-pop" role="dialog" aria-label={copy.projectCurrent}><p>{copy.projectCurrent}</p>{projectEditing ? <div className="project-rename"><input ref={projectInputRef} value={projectNameDraft} onChange={(event) => setProjectNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveProjectName(); if (event.key === "Escape") setProjectEditing(false); }} /><button onClick={saveProjectName}><Check size={14} />{copy.save}</button></div> : <><div className="project-summary"><span><em />{projectName}</span><small>{assets.length} {copy.projectImages} · {annotations.length} {copy.projectAnnotations}</small></div><button onClick={beginProjectRename}><Pencil size={14} /><span><b>{copy.renameProject}</b><small>{projectName}</small></span></button><button onClick={() => { setProjectOpen(false); setLeftOpen(true); }}><FolderOpen size={14} /><span><b>{copy.viewImages}</b><small>{assets.length} {copy.projectImages}</small></span></button></>}</section>}</div></div>
-      <div className="head-actions"><span className={`save ${saved ? "done" : ""}`}><Cloud size={14} />{saved ? copy.saved : copy.saving}</span><button className={`sam-connection ${samEndpoint ? "connected" : ""}`} onClick={openSamSettings}><Link2 size={14} />{samEndpoint ? copy.samActive : copy.activateSam}</button><div className="export"><button className="export-main" disabled={exporting} onClick={() => setExportOpen(!exportOpen)}>{exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {copy.export} <ChevronDown size={13} /></button>{exportOpen && <div className="export-pop"><p>{copy.exportFormat}</p><button onClick={() => void exportData("coco")}><b>COCO JSON</b><span>{copy.cocoDesc}</span></button><button onClick={() => void exportData("yolo")}><b>YOLO ZIP</b><span>{copy.yoloDesc}</span></button><button onClick={() => void exportData("project")}><b>VisionLabel</b><span>{copy.projectBackup}</span></button></div>}</div><button className="preferences-button" title={copy.preferences} aria-label={copy.preferences} onClick={() => setPreferencesOpen(true)}><Languages size={17} /></button><button className="avatar">EA</button><button className="mobile" onClick={() => setRightOpen(true)} aria-label={copy.classes}><MoreHorizontal size={19} /></button></div>
+      <input hidden ref={openProjectInputRef} type="file" accept=".visionlabel,application/zip,application/vnd.visionlabel.project+zip" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void loadProjectFile(file); }} />
+      <div className="brand-side"><button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button><div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i /><div className="project-switcher" ref={projectSwitcherRef}><button className={`project ${projectOpen ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={projectOpen} onClick={() => { setProjectOpen((value) => !value); setProjectEditing(false); }}><em />{projectName} <ChevronDown size={14} /></button>{projectOpen && <section className="project-pop" role="dialog" aria-label={copy.projectCurrent}><p>{copy.projectCurrent}</p>{projectEditing ? <div className="project-rename"><input ref={projectInputRef} value={projectNameDraft} onChange={(event) => setProjectNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveProjectName(); if (event.key === "Escape") setProjectEditing(false); }} /><button onClick={saveProjectName}><Check size={14} />{copy.save}</button></div> : <><div className="project-summary"><span><em />{projectName}</span><small>{assets.length} {copy.projectImages} · {annotations.length} {copy.projectAnnotations}</small></div><button onClick={requestOpenProject}><FolderUp size={14} /><span><b>{copy.openProject}</b><small>{copy.openProjectHint}</small></span></button><button onClick={openSaveProjectDialog}><Save size={14} /><span><b>{copy.saveProject}</b><small>{copy.saveProjectHint}</small></span></button><button onClick={beginProjectRename}><Pencil size={14} /><span><b>{copy.renameProject}</b><small>{projectName}</small></span></button><button onClick={() => { setProjectOpen(false); setLeftOpen(true); }}><FolderOpen size={14} /><span><b>{copy.viewImages}</b><small>{assets.length} {copy.projectImages}</small></span></button></>}</section>}</div></div>
+      <div className="head-actions"><span className={`save ${saved ? "done" : ""}`}><HardDriveDownload size={14} />{saved ? copy.saved : copy.saving}</span><button className="open-project-main" disabled={projectBusy} onClick={requestOpenProject}><FolderUp size={15} /><span>{copy.openProject}</span></button><button className="project-save-main" disabled={projectBusy} onClick={openSaveProjectDialog}>{projectBusy ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}<span>{copy.saveProject}</span></button><button className={`sam-connection ${samEndpoint ? "connected" : ""}`} onClick={openSamSettings}><Link2 size={14} />{samEndpoint ? copy.samActive : copy.activateSam}</button><div className="export"><button className="export-main" disabled={exporting || projectBusy} onClick={() => setExportOpen(!exportOpen)}>{exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {copy.export} <ChevronDown size={13} /></button>{exportOpen && <div className="export-pop"><p>{copy.exportFormat}</p><button onClick={() => void exportData("coco")}><b>COCO JSON</b><span>{copy.cocoDesc}</span></button><button onClick={() => void exportData("yolo")}><b>YOLO ZIP</b><span>{copy.yoloDesc}</span></button><button onClick={() => void exportData("project")}><b>VisionLabel</b><span>{copy.projectBackup}</span></button></div>}</div><button className="preferences-button" title={copy.preferences} aria-label={copy.preferences} onClick={() => setPreferencesOpen(true)}><Languages size={17} /></button><span className="local-mode" title={copy.localOnlyHint}><ShieldCheck size={14} />{copy.localOnly}</span><button className="mobile" onClick={() => setRightOpen(true)} aria-label={copy.classes}><MoreHorizontal size={19} /></button></div>
     </header>
 
     <div className="workspace">
@@ -1013,8 +1093,8 @@ export default function Home() {
         <button className="import" onClick={() => input.current?.click()}><ImagePlus size={16} /> {copy.importImages}</button>
         <label className="search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={copy.searchImage} /></label>
         <div className="progress"><div><span>{copy.progress}</span><b>{completed} {copy.of} {assets.length}</b></div><i><em style={{ width: `${completed / assets.length * 100}%` }} /></i></div>
-        <div className="asset-list">{assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item, index) => { const count = annotations.filter((annotation) => annotation.asset === item.id).length; return <button key={item.id} className={current === item.id ? "active" : ""} onClick={() => chooseImage(item.id)}><div className="thumb" style={{ backgroundImage: `url(${item.src})` }}><span>{String(index + 1).padStart(2, "0")}</span>{count > 0 && <b>{count}</b>}</div><div><strong>{item.name}</strong><small>{item.width && item.height ? `${item.width} × ${item.height}` : copy.localImage}</small></div><i className={count ? "checked" : ""}>{count ? "✓" : ""}</i></button>; })}</div>
-        <div className="privacy"><Cloud size={14} /> {copy.privacy}</div>
+        <div className="asset-list">{assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item, index) => { const count = annotations.filter((annotation) => annotation.asset === item.id).length; return <button key={item.id} className={`${current === item.id ? "active" : ""} ${item.missing ? "missing" : ""}`} onClick={() => chooseImage(item.id)}><div className="thumb" style={{ backgroundImage: item.src ? `url(${item.src})` : "none" }}><span>{String(index + 1).padStart(2, "0")}</span>{count > 0 && <b>{count}</b>}</div><div><strong>{item.name}</strong><small>{item.missing ? copy.imageNotLoaded : item.width && item.height ? `${item.width} × ${item.height}` : copy.localImage}</small></div><i className={count ? "checked" : ""}>{count ? "✓" : ""}</i></button>; })}</div>
+        <div className="privacy"><ShieldCheck size={14} /> {copy.privacy}</div>
       </aside>
 
       <section className="editor">
@@ -1026,9 +1106,9 @@ export default function Home() {
           <label className="stroke-control" title={copy.lineThickness}><PenLine size={14} /><input aria-label={copy.lineThickness} type="range" min="1" max="10" step="1" value={lineThickness} onChange={(event) => setLineThickness(Number(event.target.value))} /><output>{lineThickness}px</output></label><div className="zoom" title={copy.shiftZoom}><button aria-label={copy.zoomOut} onClick={() => setZoom((value) => Math.max(10, value - 10))}><ZoomOut size={15} /></button><span>{zoom}%</span><button aria-label={copy.zoomIn} onClick={() => setZoom((value) => Math.min(400, value + 10))}><ZoomIn size={15} /></button></div><ToolButton title={copy.fitImage} onClick={fitImageToViewport}><Focus size={16} /></ToolButton>
         </div>
 
-        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}><div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
+        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const projectFile = Array.from(event.dataTransfer.files).find((file) => file.name.toLowerCase().endsWith(".visionlabel")); if (projectFile) { if (saved || window.confirm(copy.replaceUnsavedProject)) void loadProjectFile(projectFile); } else files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}><div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img crossOrigin="anonymous" src={asset.src} alt={`Imagem para anotação: ${asset.name}`} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (asset.width !== image.naturalWidth || asset.height !== image.naturalHeight) setAssets((items) => items.map((item) => item.id === asset.id ? { ...item, width: image.naturalWidth, height: image.naturalHeight } : item)); }} />
+          {asset.missing ? <div className="missing-image"><Images size={34} /><b>{asset.name}</b><p>{copy.imageMissingHint}</p><button onClick={() => input.current?.click()}><FolderOpen size={15} />{copy.reloadProjectImages}</button></div> : <img crossOrigin="anonymous" src={asset.src} alt={`Imagem para anotação: ${asset.name}`} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (asset.width !== image.naturalWidth || asset.height !== image.naturalHeight) setAssets((items) => items.map((item) => item.id === asset.id ? { ...item, width: image.naturalWidth, height: image.naturalHeight } : item)); }} />}
           <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onAuxClick={(event) => event.preventDefault()} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => tool === "polygon" && finishPolygon()}>
             {visibleAnnotations.map((annotation) => {
               const label = getLabel(annotation.label);
@@ -1077,6 +1157,7 @@ export default function Home() {
     </div>
 
     {classManagerOpen && <div className="modal-backdrop class-manager-backdrop"><section className="class-manager-page" role="dialog" aria-modal="true" aria-labelledby="class-manager-title"><header><div><span><Palette size={20} /></span><div><h2 id="class-manager-title">{copy.classManagerTitle}</h2><p>{copy.classManagerHint}</p></div></div><button onClick={() => { setClassManagerOpen(false); setSelectedClassIds([]); }} aria-label={copy.close}><X size={21} /></button></header><div className="class-manager-body"><div className="class-manager-sidebar"><section className="label-creator"><div><Palette size={14} /><span><b>{copy.labelStudio}</b><small>{copy.labelStudioHint}</small></span></div><div className="label-create-row"><input ref={labelInputRef} aria-label={copy.className} placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><input className="label-color" type="color" aria-label={copy.labelColor} title={copy.labelColor} value={newLabelColor} onChange={(event) => setNewLabelColor(event.target.value)} /><button aria-label={copy.createLabel} title={copy.createLabel} disabled={!newLabel.trim()} onClick={addClass}><Plus size={15} /></button></div></section><section className="class-manager-active"><div><Tags size={14} /><span><b>{copy.newAnnotationClass}</b><small>{copy.newShapesClass}</small></span></div><select aria-label={copy.newAnnotationClass} value={activeLabel} onChange={(event) => setActiveLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.id === UNLABELED_ID ? copy.unlabeled : label.name}</option>)}</select></section></div><section className="class-manager-classes"><div className="class-manager-list-head"><div><b>{copy.classList}</b><span>{labels.length} {copy.classes.toLocaleLowerCase()}</span></div>{selectableClasses.length > 0 && <button onClick={() => setSelectedClassIds(selectedClassIds.length === selectableClasses.length ? [] : selectableClasses.map((label) => label.id))}>{selectedClassIds.length === selectableClasses.length ? copy.clearClassSelection : copy.selectAllClasses}</button>}</div>{selectedClassIds.length > 0 && <div className="class-selection-summary"><span>{selectedClassIds.length} {copy.classesSelected}</span><button onClick={() => requestClassDeletion(selectedClassIds)}><Trash2 size={12} />{copy.deleteSelectedClasses}</button></div>}<div className="label-list class-manager-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); const isUnlabeled = label.id === UNLABELED_ID; const isChecked = selectedClassIds.includes(label.id); return <div key={label.id} className={`label-row ${isHidden ? "hidden" : ""} ${isChecked ? "checked" : ""}`}>{isUnlabeled ? <span className="label-selector-spacer" /> : <button className={`label-selector ${isChecked ? "selected" : ""}`} aria-label={`${copy.selectClass}: ${label.name}`} aria-pressed={isChecked} onClick={() => setSelectedClassIds((items) => items.includes(label.id) ? items.filter((id) => id !== label.id) : [...items, label.id])}>{isChecked && <Check size={11} />}</button>}<div className="label-main"><i style={{ background: label.color }} /><span>{isUnlabeled ? copy.unlabeled : label.name}</span><em>{annotations.filter((annotation) => annotation.label === label.id).length}</em>{label.key ? <kbd>{label.key}</kbd> : <span />}</div><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button><button className="delete-label" disabled={isUnlabeled} title={isUnlabeled ? copy.unlabeledProtected : copy.deleteClass} aria-label={`${copy.deleteClass}: ${label.name}`} onClick={() => requestClassDeletion([label.id])}><Trash2 size={13} /></button></div>; })}</div></section></div><footer><button onClick={() => { setClassManagerOpen(false); setSelectedClassIds([]); }}><Check size={14} />{copy.close}</button></footer></section></div>}
+    {projectSaveOpen && <div className="modal-backdrop"><section className="sam-modal project-save-modal" role="dialog" aria-modal="true" aria-labelledby="project-save-title"><header><div><span><Save size={18} /></span><div><h2 id="project-save-title">{copy.saveProjectTitle}</h2><p>{copy.saveProjectDescription}</p></div></div><button onClick={() => setProjectSaveOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="project-save-options" role="radiogroup" aria-label={copy.saveProjectTitle}><button className={projectSaveMode === "annotations" ? "active" : ""} role="radio" aria-checked={projectSaveMode === "annotations"} onClick={() => setProjectSaveMode("annotations")}><span><FileText size={20} /></span><div><b>{copy.annotationsOnly}</b><p>{copy.annotationsOnlyHint}</p><small>{formatBytes(annotationProjectBytes)} · {assets.length} {copy.imageReferences}</small></div><Check size={16} /></button><button className={projectSaveMode === "complete" ? "active" : ""} role="radio" aria-checked={projectSaveMode === "complete"} disabled={missingProjectImages > 0} onClick={() => setProjectSaveMode("complete")}><span><Images size={20} /></span><div><b>{copy.imagesAndAnnotations}</b><p>{copy.imagesAndAnnotationsHint}</p><small>{knownProjectImageBytes ? `${formatBytes(knownProjectImageBytes)} + ${formatBytes(annotationProjectBytes)}` : copy.sizeCalculatedOnSave}</small>{missingProjectImages > 0 && <em>{missingProjectImages} {copy.projectImagesNeedReload}</em>}</div><Check size={16} /></button></div><div className="project-save-privacy"><ShieldCheck size={16} /><div><b>{copy.localOnly}</b><p>{copy.projectSavePrivacy}</p></div></div><footer><button onClick={() => setProjectSaveOpen(false)}>{copy.cancel}</button><button className="connect" disabled={projectBusy || (projectSaveMode === "complete" && missingProjectImages > 0)} onClick={() => void savePortableProject(projectSaveMode)}>{projectBusy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}{copy.generateProjectFile}</button></footer></section></div>}
     {pendingDeleteAnnotations.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-annotations-title" aria-describedby="delete-annotations-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-annotations-title">{copy.confirmDeleteAnnotations}</h2><p>{pendingDeleteAnnotations.length} {copy.annotationsToDelete}</p></div></div><button onClick={() => setPendingDeleteAnnotationIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-annotations-description" className="delete-class-warning">{copy.deleteAnnotationsWarning}</p><div className="delete-class-impact"><span>{copy.annotationsToDelete}</span><b>{pendingDeleteAnnotations.length}</b></div><footer><button onClick={() => setPendingDeleteAnnotationIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingAnnotations}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
     {pendingDeleteClasses.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-class-title" aria-describedby="delete-class-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-class-title">{pendingDeleteClasses.length === 1 ? copy.confirmDeleteClass : copy.confirmDeleteClasses}</h2><p>{pendingDeleteClasses.map((label) => label.name).join(", ")}</p></div></div><button onClick={() => setPendingDeleteClassIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-class-description" className="delete-class-warning">{copy.deleteClassWarning} <strong>{copy.unlabeled}</strong>.</p><div className="delete-class-impact"><span>{copy.affectedAnnotations}</span><b>{pendingAffectedAnnotations}</b></div><footer><button onClick={() => setPendingDeleteClassIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingClasses}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
     {preferencesOpen && <div className="modal-backdrop"><section className="sam-modal preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title"><header><div><span><Settings2 size={18} /></span><div><h2 id="preferences-title">{copy.preferences}</h2><p>VisionLabel</p></div></div><button onClick={() => setPreferencesOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="preferences-tabs"><button className={preferencesTab === "appearance" ? "active" : ""} onClick={() => setPreferencesTab("appearance")}><Sun size={14} />{copy.appearance}</button><button className={preferencesTab === "language" ? "active" : ""} onClick={() => setPreferencesTab("language")}><Languages size={14} />{copy.language}</button></div>{preferencesTab === "appearance" ? <div className="preference-options"><button className={themeMode === "system" ? "active" : ""} onClick={() => setThemeMode("system")}><Monitor size={20} /><b>{copy.system}</b></button><button className={themeMode === "light" ? "active" : ""} onClick={() => setThemeMode("light")}><Sun size={20} /><b>{copy.light}</b></button><button className={themeMode === "dark" ? "active" : ""} onClick={() => setThemeMode("dark")}><Moon size={20} /><b>{copy.dark}</b></button></div> : <div className="language-options"><button className={language === "pt" ? "active" : ""} onClick={() => setLanguage("pt")}><b>Português</b><span>PT-BR</span></button><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}><b>English</b><span>EN</span></button><button className={language === "fr" ? "active" : ""} onClick={() => setLanguage("fr")}><b>Français</b><span>FR</span></button><button className={language === "es" ? "active" : ""} onClick={() => setLanguage("es")}><b>Español</b><span>ES</span></button></div>}<footer><button className="connect" onClick={() => setPreferencesOpen(false)}><Check size={15} /> {copy.close}</button></footer></section></div>}
