@@ -21,11 +21,8 @@ echo.
 
 if not exist "%APP_DIR%" mkdir "%APP_DIR%"
 
-set "MARKER=# === VISIONLABEL_"
-set "MARKER=%MARKER%PYTHON ==="
-for /f "tokens=1 delims=:" %%N in ('findstr /n /x /c:"%MARKER%" "%~f0"') do set "MARKER_LINE=%%N"
-if not defined MARKER_LINE goto :extract_error
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$lines=Get-Content -LiteralPath '%~f0'; $lines[%MARKER_LINE%..($lines.Length-1)] | Set-Content -LiteralPath '%CONNECTOR%' -Encoding UTF8"
+set "SELF_PATH=%~f0"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$content=[IO.File]::ReadAllText($env:SELF_PATH); $marker='# === VISIONLABEL_'+'PYTHON ==='; $index=$content.IndexOf($marker,[StringComparison]::Ordinal); if($index -lt 0){exit 41}; $python=$content.Substring($index+$marker.Length).TrimStart([char]13,[char]10); if([string]::IsNullOrWhiteSpace($python)){exit 42}; [IO.File]::WriteAllText($env:CONNECTOR,$python,[Text.UTF8Encoding]::new($false))"
 if errorlevel 1 goto :extract_error
 
 set "PY_CMD="
