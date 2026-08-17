@@ -17,6 +17,7 @@ type Info = {
   tile: string;
   niveis: number;
   niveisView: number;
+  bandas: string;
   resolucaoNativa: string;
   ehCog: string;
 };
@@ -214,11 +215,48 @@ export default function CogPrototype() {
         throw new Error("Os primeiros bytes não são de um TIFF: esperado II* ou MM*.");
       }
 
+      // Os metadados vêm antes da fonte do OpenLayers, porque duas decisões dependem
+      // deles: o valor de nodata e, quando há só uma banda, a rampa de cor. Também é
+      // daqui que saem as dimensões: sem overviews o OpenLayers sintetiza níveis extra
+      // e o "mais fino" deixa de ser a resolução nativa — foi assim que um arquivo de
+      // 4096² apareceu como 8192².
       setEtapa("Lendo o cabeçalho e a pirâmide de overviews…");
+      const { fromBlob, fromUrl } = await import("geotiff");
+      const tiff = await comLimite(
+        typeof origem === "string" ? fromUrl(origem) : fromBlob(origem), "abertura do TIFF");
+      const imagem = await comLimite(tiff.getImage(0), "leitura dos metadados");
+      const totalImagens = await tiff.getImageCount();
+      const bandas = imagem.getSamplesPerPixel();
+      const semDado = imagem.getGDALNoData();
+
+      // Uma banda só (elevação, NDVI, térmico, máscara) não tem mapeamento para RGB:
+      // sem uma rampa explícita o WebGLTile pinta tudo preto, porque interpreta a
+      // altitude em metros como componente de cor de 0 a 255.
+      let faixa: { min: number; max: number } | null = null;
+      if (bandas === 1) {
+        setEtapa("Medindo a faixa de valores da banda…");
+        const grossa = await comLimite(tiff.getImage(totalImagens - 1), "leitura do overview");
+        const rasters = await comLimite(grossa.readRasters(), "amostragem de valores");
+        const amostra = (rasters as unknown as Array<ArrayLike<number>>)[0];
+        let min = Infinity;
+        let max = -Infinity;
+        for (let i = 0; i < amostra.length; i += 1) {
+          const valor = amostra[i];
+          if (!Number.isFinite(valor) || valor === semDado) continue;
+          if (valor < min) min = valor;
+          if (valor > max) max = valor;
+        }
+        faixa = Number.isFinite(min) && max > min ? { min, max } : { min: 0, max: 255 };
+      }
+
+      const fonteBase = typeof origem === "string" ? { url: origem } : { blob: origem };
       const source = new GeoTIFF({
-        sources: [typeof origem === "string" ? { url: origem } : { blob: origem }],
-        // Sem normalização os valores chegam crus; para TCI de 8 bits o padrão serve.
+        sources: [semDado !== null ? { ...fonteBase, nodata: semDado } : fonteBase],
         interpolate: true,
+        // Por padrão o OpenLayers reescala os valores para 0–1, o que desfaz a relação
+        // com a unidade real. Para a rampa de uma banda usar metros de altitude, a
+        // normalização precisa sair do caminho.
+        ...(faixa ? { normalize: false } : {}),
       });
 
       source.on("tileloadstart", () => { liveRef.current.tilesPedidos += 1; });
@@ -228,15 +266,6 @@ export default function CogPrototype() {
       setEtapa("Montando o sistema de coordenadas…");
       const viewConfig = await comLimite(source.getView(), "leitura da pirâmide");
       const resolutions = (viewConfig.resolutions ?? []) as number[];
-
-      // As dimensões vêm do TIFF, não do array de resoluções da view: sem overviews o
-      // OpenLayers sintetiza níveis extra e o "mais fino" deixa de ser a resolução nativa
-      // — foi assim que um arquivo de 4096² apareceu como 8192².
-      const { fromBlob, fromUrl } = await import("geotiff");
-      const tiff = await comLimite(
-        typeof origem === "string" ? fromUrl(origem) : fromBlob(origem), "abertura do TIFF");
-      const imagem = await comLimite(tiff.getImage(0), "leitura dos metadados");
-      const totalImagens = await tiff.getImageCount();
       // Num TIFF por faixas o geotiff.js devolve a largura da imagem como "tile", então
       // getTileWidth() não distingue tiled de striped. A flag isTiled sim: ela vale false
       // quando o arquivo tem StripOffsets em vez de TileWidth.
@@ -255,6 +284,9 @@ export default function CogPrototype() {
         tile: `${larguraTile} × ${alturaTile}`,
         niveis: Math.max(0, totalImagens - 1),
         niveisView: resolutions.length,
+        bandas: bandas === 1
+          ? `1 (faixa ${faixa ? `${faixa.min.toFixed(0)}–${faixa.max.toFixed(0)}` : "?"}${semDado !== null ? `, nodata ${semDado}` : ""})`
+          : `${bandas}${semDado !== null ? `, nodata ${semDado}` : ""}`,
         resolucaoNativa: `${Math.abs(escalaX).toFixed(4)} un/px`,
         // Sem tiles internos o geotiff.js precisa ler faixas inteiras: funciona, mas
         // transfere muito mais do que o necessário.
@@ -277,7 +309,19 @@ export default function CogPrototype() {
       const map = new Map({
         target: hostRef.current!,
         layers: [
-          new WebGLTileLayer({ source }),
+          // Com uma banda, a rampa mapeia a faixa medida para tons legíveis; com três,
+          // o padrão do OpenLayers já trata como RGB.
+          new WebGLTileLayer({
+            source,
+            ...(faixa ? {
+              style: {
+                color: ["interpolate", ["linear"], ["band", 1],
+                  faixa.min, [16, 22, 19],
+                  (faixa.min + faixa.max) / 2, [104, 148, 124],
+                  faixa.max, [242, 246, 243]],
+              },
+            } : {}),
+          }),
           new VectorLayer({ source: desenhos, style: estilo }),
         ],
         view: new View(viewConfig),
@@ -443,6 +487,7 @@ export default function CogPrototype() {
           <dt>Projeção</dt><dd>{info.projecao}</dd>
           <dt>Pixels</dt><dd>{info.pixels}</dd>
           <dt>Tile interno</dt><dd>{info.tile}</dd>
+          <dt>Bandas</dt><dd>{info.bandas}</dd>
           <dt>Overviews</dt><dd>{info.niveis}</dd>
           <dt>Níveis na view</dt><dd>{info.niveisView}</dd>
           <dt>Resolução nativa</dt><dd>{info.resolucaoNativa}</dd>
