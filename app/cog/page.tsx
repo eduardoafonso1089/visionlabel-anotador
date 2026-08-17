@@ -152,6 +152,18 @@ function mb(bytes: number) {
   return bytes < 1048576 ? `${(bytes / 1024).toFixed(0)} KB` : `${(bytes / 1048576).toFixed(2)} MB`;
 }
 
+/** Matriz BT.601 de faixa cheia, a que o libjpeg usa. Espera as bandas em 0–255. */
+function corDeYCbCr() {
+  const y = ["band", 1];
+  const cb = ["-", ["band", 2], 128];
+  const cr = ["-", ["band", 3], 128];
+  return ["color",
+    ["+", y, ["*", cr, 1.402]],
+    ["+", y, ["*", cb, -0.344136], ["*", cr, -0.714136]],
+    ["+", y, ["*", cb, 1.772]],
+  ];
+}
+
 export default function CogPrototype() {
   const hostRef = useRef<HTMLDivElement>(null);
   const cleanupRef = useRef<(() => void) | null>(null);
@@ -229,6 +241,20 @@ export default function CogPrototype() {
       const bandas = imagem.getSamplesPerPixel();
       const semDado = imagem.getGDALNoData();
 
+      // Ortofoto de drone quase sempre chega como JPEG com photometric=YCbCr, que comprime
+      // bem melhor que RGB. Só que o decodificador JPEG do geotiff.js devolve Y, Cb e Cr
+      // crus nos três canais: quem converte é readRGB(), e o OpenLayers usa readRasters().
+      // Sem corrigir, grama sai rosa e telhado sai violeta. A matriz vai no shader.
+      // A partir da 2.1 o geotiff.js embrulha o diretório numa classe com getValue(); antes
+      // era um objeto plano indexado pelo nome da tag. Aceita as duas formas.
+      const diretorio = (imagem as unknown as {
+        fileDirectory?: { getValue?: (nome: string) => unknown } & Record<string, unknown>;
+      }).fileDirectory;
+      const photometric = typeof diretorio?.getValue === "function"
+        ? diretorio.getValue("PhotometricInterpretation")
+        : diretorio?.PhotometricInterpretation;
+      const ycbcr = bandas === 3 && photometric === 6;
+
       // Uma banda só (elevação, NDVI, térmico, máscara) não tem mapeamento para RGB:
       // sem uma rampa explícita o WebGLTile pinta tudo preto, porque interpreta a
       // altitude em metros como componente de cor de 0 a 255.
@@ -254,9 +280,10 @@ export default function CogPrototype() {
         sources: [semDado !== null ? { ...fonteBase, nodata: semDado } : fonteBase],
         interpolate: true,
         // Por padrão o OpenLayers reescala os valores para 0–1, o que desfaz a relação
-        // com a unidade real. Para a rampa de uma banda usar metros de altitude, a
-        // normalização precisa sair do caminho.
-        ...(faixa ? { normalize: false } : {}),
+        // com a unidade real. Para a rampa de uma banda usar metros de altitude — e para
+        // a conversão de YCbCr sair na forma de livro, com o 128 literal — a normalização
+        // precisa sair do caminho.
+        ...(faixa || ycbcr ? { normalize: false } : {}),
       });
 
       source.on("tileloadstart", () => { liveRef.current.tilesPedidos += 1; });
@@ -286,7 +313,7 @@ export default function CogPrototype() {
         niveisView: resolutions.length,
         bandas: bandas === 1
           ? `1 (faixa ${faixa ? `${faixa.min.toFixed(0)}–${faixa.max.toFixed(0)}` : "?"}${semDado !== null ? `, nodata ${semDado}` : ""})`
-          : `${bandas}${semDado !== null ? `, nodata ${semDado}` : ""}`,
+          : `${bandas}${ycbcr ? " (YCbCr→RGB na GPU)" : ""}${semDado !== null ? `, nodata ${semDado}` : ""}`,
         resolucaoNativa: `${Math.abs(escalaX).toFixed(4)} un/px`,
         // Sem tiles internos o geotiff.js precisa ler faixas inteiras: funciona, mas
         // transfere muito mais do que o necessário.
@@ -309,8 +336,8 @@ export default function CogPrototype() {
       const map = new Map({
         target: hostRef.current!,
         layers: [
-          // Com uma banda, a rampa mapeia a faixa medida para tons legíveis; com três,
-          // o padrão do OpenLayers já trata como RGB.
+          // Com uma banda, a rampa mapeia a faixa medida para tons legíveis. Com três em
+          // YCbCr, a matriz devolve RGB. Com três já em RGB, o padrão do OpenLayers serve.
           new WebGLTileLayer({
             source,
             ...(faixa ? {
@@ -320,7 +347,7 @@ export default function CogPrototype() {
                   (faixa.min + faixa.max) / 2, [104, 148, 124],
                   faixa.max, [242, 246, 243]],
               },
-            } : {}),
+            } : ycbcr ? { style: { color: corDeYCbCr() } } : {}),
           }),
           new VectorLayer({ source: desenhos, style: estilo }),
         ],
