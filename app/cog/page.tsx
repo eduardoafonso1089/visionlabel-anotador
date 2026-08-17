@@ -32,6 +32,108 @@ type Live = {
   vertices: number;
 };
 
+type Falha = { titulo: string; detalhe: string; dica?: string };
+
+const LIMITE_MS = 30_000;
+
+// Lê só os 4 primeiros bytes. Serve para os dois caminhos: um File dá slice, uma URL
+// dá range request. É a checagem mais barata que existe e evita entregar lixo ao leitor.
+async function primeirosBytes(origem: File | string) {
+  if (typeof origem !== "string") {
+    return new Uint8Array(await origem.slice(0, 4).arrayBuffer());
+  }
+  const resposta = await fetch(origem, { headers: { Range: "bytes=0-3" } });
+  if (!resposta.ok) throw new Error(`O servidor respondeu HTTP ${resposta.status}.`);
+  return new Uint8Array(await resposta.arrayBuffer());
+}
+
+// II* ou MM* no começo do arquivo. Sem isso não é TIFF, e insistir só faz o leitor
+// travar interpretando bytes aleatórios — foi o que acontecia com o HTML de fallback
+// que o servidor devolve, com status 200, para um caminho inexistente.
+function assinaturaTiff(bytes: Uint8Array) {
+  if (bytes.length < 4) return null;
+  const little = bytes[0] === 0x49 && bytes[1] === 0x49;
+  const big = bytes[0] === 0x4d && bytes[1] === 0x4d;
+  if (!little && !big) return null;
+  const magic = little ? bytes[2] | (bytes[3] << 8) : (bytes[2] << 8) | bytes[3];
+  return magic === 42 ? "TIFF" : magic === 43 ? "BigTIFF" : null;
+}
+
+// Nenhuma etapa pode ficar pendurada para sempre: uma barra girando sem fim é pior
+// que um erro claro.
+function comLimite<T>(promessa: Promise<T>, etapa: string) {
+  return new Promise<T>((resolve, reject) => {
+    const id = window.setTimeout(
+      () => reject(new Error(`Tempo esgotado (${LIMITE_MS / 1000}s) em: ${etapa}`)), LIMITE_MS);
+    promessa.then(
+      (valor) => { window.clearTimeout(id); resolve(valor); },
+      (erro) => { window.clearTimeout(id); reject(erro); });
+  });
+}
+
+// Traduz a exceção crua num diagnóstico útil. O objetivo é o cliente saber o que
+// fazer com o arquivo dele, não só que "falhou".
+function diagnostica(error: unknown, origem: File | string): Falha {
+  const bruto = error instanceof Error ? error.message : String(error);
+  const nome = typeof origem === "string" ? origem : origem.name;
+  const baixo = bruto.toLowerCase();
+
+  const http = bruto.match(/HTTP (\d{3})/);
+  if (http) {
+    const codigo = http[1];
+    return {
+      titulo: codigo === "404" ? "O arquivo não foi encontrado no endereço informado"
+        : codigo === "403" ? "Sem permissão para ler este arquivo"
+        : `O servidor recusou o pedido (HTTP ${codigo})`,
+      detalhe: bruto,
+      dica: codigo === "404" ? "Confira o caminho. Se for um arquivo local, use o botão de escolher arquivo."
+        : "O arquivo precisa ser público e permitir range requests (Accept-Ranges: bytes).",
+    };
+  }
+  if (/failed to fetch|networkerror|load failed/.test(baixo)) {
+    return {
+      titulo: "Não foi possível baixar o arquivo",
+      detalhe: bruto,
+      dica: "Verifique o endereço e se o servidor libera CORS e range requests (Accept-Ranges: bytes).",
+    };
+  }
+  if (/tempo esgotado/.test(baixo)) {
+    return {
+      titulo: "O arquivo não respondeu em tempo",
+      detalhe: bruto,
+      dica: "Pode ser um arquivo sem tiles internos, uma rede lenta, ou um endereço que "
+        + "devolve outra coisa em vez do TIFF.",
+    };
+  }
+  if (/não são de um tiff|not a tiff|invalid tiff|unexpected magic|endianness/.test(baixo)) {
+    return {
+      titulo: "Este arquivo não é um TIFF",
+      detalhe: bruto,
+      dica: `${nome} não começa com a assinatura TIFF. Converta com: `
+        + "gdal_translate -of COG entrada.ext saida.tif",
+    };
+  }
+  if (/projection|crs|epsg|no geo/.test(baixo)) {
+    return {
+      titulo: "O arquivo não tem georreferenciamento utilizável",
+      detalhe: bruto,
+      dica: "Um COG precisa de CRS e ModelPixelScale. Reprojete com: gdalwarp -t_srs EPSG:4326",
+    };
+  }
+  if (/out of memory|allocation/.test(baixo)) {
+    return {
+      titulo: "Memória insuficiente para este arquivo",
+      detalhe: bruto,
+      dica: "Sem tiles internos o leitor precisa carregar faixas inteiras. Gere um COG com overviews.",
+    };
+  }
+  return {
+    titulo: "Não foi possível carregar a imagem",
+    detalhe: bruto,
+    dica: "Confirme que é um GeoTIFF tiled. Valide com: rio cogeo validate arquivo.tif",
+  };
+}
+
 const ZERO: Live = {
   tilesPedidos: 0, tilesProntos: 0, tilesErro: 0, requisicoes: 0, bytes: 0,
   escala: "—", ponteiro: "—", vertices: 0,
@@ -55,8 +157,10 @@ export default function CogPrototype() {
   const liveRef = useRef<Live>({ ...ZERO });
   const [live, setLive] = useState<Live>({ ...ZERO });
   const [info, setInfo] = useState<Info | null>(null);
-  const [status, setStatus] = useState("Escolha um arquivo COG ou carregue a amostra.");
-  const [busy, setBusy] = useState(false);
+  const [fase, setFase] = useState<"vazio" | "lendo" | "pronto" | "erro">("vazio");
+  const [etapa, setEtapa] = useState("");
+  const [falha, setFalha] = useState<Falha | null>(null);
+  const busy = fase === "lendo";
   const [mode, setMode] = useState<"desenhar" | "editar">("desenhar");
   const modeRef = useRef(mode);
 
@@ -70,10 +174,11 @@ export default function CogPrototype() {
   useEffect(() => () => cleanupRef.current?.(), []);
 
   const load = useCallback(async (origem: File | string) => {
-    setBusy(true);
+    setFase("lendo");
+    setFalha(null);
     setInfo(null);
     liveRef.current = { ...ZERO };
-    setStatus("Lendo cabeçalho do COG…");
+    setEtapa("Carregando a biblioteca de mapa…");
     cleanupRef.current?.();
 
     try {
@@ -103,6 +208,13 @@ export default function CogPrototype() {
         };
       }
 
+      setEtapa("Verificando a assinatura do arquivo…");
+      const tipoArquivo = assinaturaTiff(await comLimite(primeirosBytes(origem), "leitura inicial"));
+      if (!tipoArquivo) {
+        throw new Error("Os primeiros bytes não são de um TIFF: esperado II* ou MM*.");
+      }
+
+      setEtapa("Lendo o cabeçalho e a pirâmide de overviews…");
       const source = new GeoTIFF({
         sources: [typeof origem === "string" ? { url: origem } : { blob: origem }],
         // Sem normalização os valores chegam crus; para TCI de 8 bits o padrão serve.
@@ -113,15 +225,17 @@ export default function CogPrototype() {
       source.on("tileloadend", () => { liveRef.current.tilesProntos += 1; });
       source.on("tileloaderror", () => { liveRef.current.tilesErro += 1; });
 
-      const viewConfig = await source.getView();
+      setEtapa("Montando o sistema de coordenadas…");
+      const viewConfig = await comLimite(source.getView(), "leitura da pirâmide");
       const resolutions = (viewConfig.resolutions ?? []) as number[];
 
       // As dimensões vêm do TIFF, não do array de resoluções da view: sem overviews o
       // OpenLayers sintetiza níveis extra e o "mais fino" deixa de ser a resolução nativa
       // — foi assim que um arquivo de 4096² apareceu como 8192².
       const { fromBlob, fromUrl } = await import("geotiff");
-      const tiff = typeof origem === "string" ? await fromUrl(origem) : await fromBlob(origem);
-      const imagem = await tiff.getImage(0);
+      const tiff = await comLimite(
+        typeof origem === "string" ? fromUrl(origem) : fromBlob(origem), "abertura do TIFF");
+      const imagem = await comLimite(tiff.getImage(0), "leitura dos metadados");
       const totalImagens = await tiff.getImageCount();
       // Num TIFF por faixas o geotiff.js devolve a largura da imagem como "tile", então
       // getTileWidth() não distingue tiled de striped. A flag isTiled sim: ela vale false
@@ -159,6 +273,7 @@ export default function CogPrototype() {
         }),
       });
 
+      setEtapa("Pedindo os primeiros tiles…");
       const map = new Map({
         target: hostRef.current!,
         layers: [
@@ -214,11 +329,14 @@ export default function CogPrototype() {
       };
 
       (window as unknown as { __cogMap?: unknown }).__cogMap = map;
-      setStatus("Carregado. Arraste para navegar, roda para zoom, clique para desenhar.");
+      setFase("pronto");
+      setEtapa("");
     } catch (error) {
-      setStatus(`Falhou: ${error instanceof Error ? error.message : String(error)}`);
-    } finally {
-      setBusy(false);
+      setFalha(diagnostica(error, origem));
+      setFase("erro");
+      setEtapa("");
+      cleanupRef.current?.();
+      cleanupRef.current = null;
     }
   }, []);
 
@@ -239,7 +357,10 @@ export default function CogPrototype() {
         void fetch(blob)
           .then((response) => response.blob())
           .then((body) => load(new File([body], blob.split("/").pop() || "local.tif")))
-          .catch((error) => setStatus(`Falhou ao baixar para Blob: ${error}`));
+          .catch((error) => {
+            setFalha(diagnostica(error, blob));
+            setFase("erro");
+          });
       } else if (alvo) {
         void load(alvo);
       }
@@ -256,10 +377,31 @@ export default function CogPrototype() {
     }
   }, [mode]);
 
+  const pendentes = Math.max(0, live.tilesPedidos - live.tilesProntos - live.tilesErro);
+  const pct = live.tilesPedidos
+    ? Math.round((live.tilesProntos + live.tilesErro) / live.tilesPedidos * 100)
+    : 0;
+
   return <main className="cog">
     <header>
       <h1>Protótipo: COG por tiles na GPU</h1>
-      <p>{status}</p>
+      <p>{
+        fase === "lendo" ? etapa
+          : fase === "pronto" ? "Arraste para navegar, roda para zoom, clique para desenhar."
+          : fase === "erro" ? "Escolha outro arquivo ou corrija o atual."
+          : "Escolha um arquivo COG ou carregue a amostra."
+      }</p>
+
+      {/* Duas barras porque só uma das fases é mensurável: ler o cabeçalho não expõe
+          progresso, então ali a barra é indeterminada; os tiles têm contagem. */}
+      {fase === "lendo" && <div className="cog-progress indeterminada" role="progressbar"
+        aria-label="Lendo o arquivo"><i /></div>}
+      {fase === "pronto" && pendentes > 0 && <div className="cog-progress" role="progressbar"
+        aria-label="Carregando tiles" aria-valuenow={pct} aria-valuemin={0} aria-valuemax={100}>
+        <i style={{ width: `${pct}%` }} />
+        <b>{live.tilesProntos} / {live.tilesPedidos} tiles</b>
+      </div>}
+
       <div className="cog-actions">
         <label className="cog-file">
           <input type="file" accept=".tif,.tiff,image/tiff" disabled={busy}
@@ -272,6 +414,24 @@ export default function CogPrototype() {
           <button className={mode === "editar" ? "on" : ""} onClick={() => setMode("editar")}>Editar</button>
         </div>}
       </div>
+      {falha && <div className="cog-erro" role="alert">
+        <span aria-hidden="true">!</span>
+        <div>
+          <b>{falha.titulo}</b>
+          <p className="cog-erro-detalhe">{falha.detalhe}</p>
+          {falha.dica && <p className="cog-erro-dica">{falha.dica}</p>}
+        </div>
+      </div>}
+
+      {/* Carregou, mas não é um COG de verdade: não é erro, é o motivo da lentidão. */}
+      {fase === "pronto" && info && info.ehCog !== "sim" && <div className="cog-aviso" role="status">
+        <span aria-hidden="true">i</span>
+        <div>
+          <b>Funciona, mas este arquivo não é um COG completo: {info.ehCog}</b>
+          <p>Sem tiles internos ou sem overviews o leitor precisa transferir muito mais
+            do que o necessário. Converta com <code>rio cogeo create entrada.tif saida.tif</code>.</p>
+        </div>
+      </div>}
     </header>
 
     <div className="cog-body">
