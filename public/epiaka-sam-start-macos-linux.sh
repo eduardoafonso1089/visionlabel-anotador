@@ -5,7 +5,7 @@ APP_DIR="${HOME}/.epiaka-sam"
 PYTHON="${APP_DIR}/venv/bin/python"
 CONNECTOR="${APP_DIR}/epiaka-sam-local.py"
 CHECKPOINT="${APP_DIR}/sam_vit_b_01ec64.pth"
-SITE_URL="https://visionlabel-anotador.eduardo1089.chatgpt.site"
+SITE_URL="https://www.epiaka.com"
 
 open_site() {
   if command -v open >/dev/null 2>&1; then

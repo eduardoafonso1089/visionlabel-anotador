@@ -7,7 +7,7 @@ set "APP_DIR=%LOCALAPPDATA%\EpiakaSAM"
 set "PYTHON=%APP_DIR%\venv\Scripts\python.exe"
 set "CONNECTOR=%APP_DIR%\epiaka-sam-local.py"
 set "CHECKPOINT=%APP_DIR%\sam_vit_b_01ec64.pth"
-set "SITE_URL=https://visionlabel-anotador.eduardo1089.chatgpt.site"
+set "SITE_URL=https://www.epiaka.com"
 
 echo.
 echo ==========================================

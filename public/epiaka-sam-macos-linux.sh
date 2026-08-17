@@ -7,7 +7,7 @@ CONNECTOR="${APP_DIR}/epiaka-sam-local.py"
 CHECKPOINT="${APP_DIR}/sam_vit_b_01ec64.pth"
 READY_FILE="${APP_DIR}/dependencies-v2.ok"
 MODEL_URL="https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-SITE_URL="https://visionlabel-anotador.eduardo1089.chatgpt.site"
+SITE_URL="https://www.epiaka.com"
 
 printf '\n==========================================\n'
 printf '       Epiaka SAM local\n'
