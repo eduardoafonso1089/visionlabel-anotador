@@ -1,13 +1,13 @@
 "use client";
 
 import {
-  Box, Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
+  Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
   Combine, Copy, Download, Eye, EyeOff, FileText, FolderOpen, FolderUp, Hand, HardDriveDownload, ImagePlus, Images, Keyboard, Languages, Link2,
   Focus, ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine, Save, ShieldCheck,
   Monitor, Moon, Palette, Pencil, Pentagon, Plus, Power, Redo2, Scissors, Search, Settings2, Sparkles,
-  Sun, Tags, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
+  Spline, Square, Sun, Tags, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
 } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import {
   annotationIntersectsRect, boundedAnnotationDelta, deletePolygonVertex, edgeMidpoints,
   insertPolygonVertex, movePolygon, MIN_VERTEX_DISTANCE, pointInPolygon, pointsToSvg,
@@ -15,18 +15,58 @@ import {
   splitPolygon, transformPolygon, translateAnnotation, unionPolygons, updatePolygonVertex,
 } from "./lib/geometry";
 import { exportCoco, exportYoloZip } from "./lib/exporters";
-import { getCopy } from "./lib/i18n";
-import { openVisionLabelProject, saveVisionLabelProject } from "./lib/project";
+import { fill, getCopy } from "./lib/i18n";
+import { openEpiakaProject, saveEpiakaProject } from "./lib/project";
 import type { ProjectSaveMode } from "./lib/project";
 import { requestSamMask } from "./lib/sam";
 import type { Language, ThemeMode } from "./lib/i18n";
 import type { Annotation, Asset, Label, SamPrompt, Tool } from "./lib/types";
 
+// useLayoutEffect não roda no servidor; alternar evita o aviso do React na renderização SSR.
+const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
+
+function storedLanguage(): Language {
+  if (typeof window === "undefined") return "pt";
+  const stored = localStorage.getItem("epiaka-language");
+  return stored === "en" || stored === "fr" || stored === "es" ? stored : "pt";
+}
+
 const UNLABELED_ID = "unlabeled";
 const UNLABELED_COLOR = "#929a95";
 const unlabeledLabel = (name = "Sem label"): Label => ({ id: UNLABELED_ID, name, color: UNLABELED_COLOR, key: "" });
 
-const colors = ["#6c8cff", "#d987ff", "#26c6b6", "#ff8a65"];
+const colors = [
+  "#6c8cff", "#d987ff", "#26c6b6", "#ff8a65", "#ffd166", "#7ee081",
+  "#59b0f6", "#f26d9d", "#c792ea", "#ff9f45", "#4dd4ac", "#e0dc3c",
+  "#8d7bff", "#ff6b6b", "#3fd0d4", "#b6c94a",
+];
+
+// Converte um matiz em hex mantendo saturação e luminosidade fixas, para as cores
+// geradas depois que a paleta acaba continuarem legíveis sobre a imagem.
+function hueToHex(hue: number) {
+  const chroma = 0.4712;
+  const match = 0.3844;
+  const sector = hue / 60;
+  const secondary = chroma * (1 - Math.abs((sector % 2) - 1));
+  const channels = [
+    [chroma, secondary, 0], [secondary, chroma, 0], [0, chroma, secondary],
+    [0, secondary, chroma], [secondary, 0, chroma], [chroma, 0, secondary],
+  ][Math.min(5, Math.floor(sector))];
+  return `#${channels.map((channel) => Math.round((channel + match) * 255).toString(16).padStart(2, "0")).join("")}`;
+}
+
+// Sugere a próxima cor livre para uma classe nova. A paleta é percorrida em ordem e
+// só recorremos à roda de matizes quando todas as cores já estiverem em uso.
+function nextLabelColor(existing: Label[]) {
+  const used = new Set(existing.map((label) => label.color.toLowerCase()));
+  const available = colors.find((color) => !used.has(color.toLowerCase()));
+  if (available) return available;
+  for (let step = 0; step < 360; step += 1) {
+    const candidate = hueToHex((existing.length * 47 + step * 11) % 360);
+    if (!used.has(candidate.toLowerCase())) return candidate;
+  }
+  return colors[existing.length % colors.length];
+}
 
 type AnnotationDrag = { startX: number; startY: number; originals: Annotation[] };
 type VertexDrag = { annotationId: string; vertexIndex: number };
@@ -42,12 +82,44 @@ type TransformDrag = {
   points: number[];
 };
 
+// Lockup Epiaka em contornos: a tinta herda a cor do texto, então serve nos dois temas,
+// e o nó fica sempre na primária da marca. A proporção símbolo/logotipo é 1,97 (altura do
+// K sobre a altura de caixa), daí o 0.63 aplicado à altura do logotipo.
+function BrandLockup({ height = 30 }: { height?: number }) {
+  return <span className="brand-lockup" role="img" aria-label="Epiaka">
+    <svg viewBox="-24.5 -108.4 130.9 209.2" height={height} aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="8.2" strokeLinecap="round">
+        <path d="M0 -98.3V90.7" /><path d="M0 0 96.3 -76.3" /><path d="M0 0 96.3 79.3" />
+      </g>
+      <circle r="18.5" fill="#44C995" />
+    </svg>
+    <svg viewBox="-2 -106 420 136" height={height * .63} aria-hidden="true">
+      <g fill="none" stroke="currentColor" strokeWidth="15">
+        <path d="M7.5 -100V0" /><path d="M7.5 -92.5H60" /><path d="M7.5 -50H53" /><path d="M7.5 -7.5H60" />
+        <path d="M85.5 -73V28" /><circle cx="114.5" cy="-36.5" r="29" />
+        <path d="M169.5 -73V0" />
+        <circle cx="224.5" cy="-36.5" r="29" /><path d="M253.5 -73V0" />
+        <path d="M279.5 -100V0" /><path d="M279.5 -32 320 -73" /><path d="M279.5 -32 324 0" />
+        <circle cx="379" cy="-36.5" r="29" /><path d="M408 -73V0" />
+      </g>
+      <circle cx="169.5" cy="-95" r="9" fill="currentColor" />
+    </svg>
+  </span>;
+}
+
 function ToolButton({ title, active, disabled, onClick, children, keyHint }: { title: string; active?: boolean; disabled?: boolean; onClick?: () => void; children: React.ReactNode; keyHint?: string }) {
   return <button className={`tool-btn ${active ? "active" : ""}`} aria-label={title} title={title} disabled={disabled} onClick={onClick}>{children}{keyHint && <small>{keyHint}</small>}</button>;
 }
 
+// Raio base de todo marcador do canvas, em unidades do viewBox: nós de polígono, pontos-chave,
+// prompts do SAM, alças e guias derivam daqui para ficarem coerentes entre si. Multiplicado por
+// handleScale (100/zoom), o tamanho na tela fica constante em qualquer nível de zoom.
+const MARKER_RADIUS = 4.6;
+
+// Nós de polígono encolhem conforme a densidade de vértices para não se sobreporem, mas nunca
+// passam do raio base — então um polígono simples tem nós do mesmo tamanho dos outros marcadores.
 function polygonHandleRadius(vertexCount: number, zoomScale: number) {
-  return Math.max(2.4, Math.min(5.2, 25 / Math.sqrt(Math.max(1, vertexCount)))) * zoomScale;
+  return Math.max(MARKER_RADIUS * .52, Math.min(MARKER_RADIUS, 25 / Math.sqrt(Math.max(1, vertexCount)))) * zoomScale;
 }
 
 function formatBytes(bytes: number) {
@@ -82,12 +154,11 @@ export default function Home() {
   const [zoom, setZoom] = useState(92);
   const [lineThickness, setLineThickness] = useState(() => {
     if (typeof window === "undefined") return 3;
-    const stored = Number(localStorage.getItem("visionlabel-line-thickness"));
+    const stored = Number(localStorage.getItem("epiaka-line-thickness"));
     return Number.isFinite(stored) && stored >= 1 && stored <= 10 ? stored : 3;
   });
   const [search, setSearch] = useState("");
   const [quality, setQuality] = useState(false);
-  const [exportOpen, setExportOpen] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [projectBusy, setProjectBusy] = useState(false);
   const [projectSaveOpen, setProjectSaveOpen] = useState(false);
@@ -100,25 +171,22 @@ export default function Home() {
   const [rightOpen, setRightOpen] = useState(false);
   const [projectOpen, setProjectOpen] = useState(false);
   const [projectEditing, setProjectEditing] = useState(false);
-  const [projectName, setProjectName] = useState("Novo projeto");
+  const [projectName, setProjectName] = useState(() => getCopy(storedLanguage()).newProject);
   const [projectNameDraft, setProjectNameDraft] = useState("");
   const [preferencesOpen, setPreferencesOpen] = useState(false);
   const [classManagerOpen, setClassManagerOpen] = useState(false);
   const [preferencesTab, setPreferencesTab] = useState<"appearance" | "language">("appearance");
-  const [language, setLanguage] = useState<Language>(() => {
-    if (typeof window === "undefined") return "pt";
-    const stored = localStorage.getItem("visionlabel-language");
-    return stored === "en" || stored === "fr" || stored === "es" ? stored : "pt";
-  });
+  const [language, setLanguage] = useState<Language>(storedLanguage);
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => {
     if (typeof window === "undefined") return "system";
-    const stored = localStorage.getItem("visionlabel-theme");
+    const stored = localStorage.getItem("epiaka-theme");
     return stored === "light" || stored === "dark" ? stored : "system";
   });
   const [start, setStart] = useState<{ x: number; y: number } | null>(null);
   const [panStart, setPanStart] = useState<{ x: number; y: number; left: number; top: number } | null>(null);
   const [draft, setDraft] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [polygonDraft, setPolygonDraft] = useState<number[]>([]);
+  const [lineDraft, setLineDraft] = useState<number[]>([]);
   const [freehandDraft, setFreehandDraft] = useState<number[]>([]);
   const [freehandDrawing, setFreehandDrawing] = useState(false);
   const [splitStart, setSplitStart] = useState<{ x: number; y: number } | null>(null);
@@ -130,7 +198,7 @@ export default function Home() {
   const [samOpen, setSamOpen] = useState(false);
   const [samEndpoint, setSamEndpoint] = useState(() => {
     if (typeof window === "undefined") return "";
-    const stored = localStorage.getItem("visionlabel-sam-endpoint") ?? "";
+    const stored = localStorage.getItem("epiaka-sam-endpoint") ?? "";
     try {
       const host = new URL(stored).hostname;
       return host === "localhost" || host === "127.0.0.1" || host === "[::1]" ? stored : "";
@@ -156,6 +224,9 @@ export default function Home() {
   const transformDragRef = useRef<TransformDrag | null>(null);
   const reshapeTargetRef = useRef<string | null>(null);
   const samRequestRef = useRef(0);
+  const renameCancelledRef = useRef(false);
+  const zoomAnchorRef = useRef<{ x: number; y: number } | null>(null);
+  const pendingZoomRef = useRef<{ clientX: number; clientY: number; anchorX: number; anchorY: number } | null>(null);
   const projectObjectUrlsRef = useRef<string[]>([]);
   const idCounter = useRef(0);
 
@@ -185,6 +256,7 @@ export default function Home() {
       : activePolygonBounds.y + activePolygonBounds.height
     : 0;
   const handleScale = Math.max(0.25, Math.min(3.34, 100 / zoom));
+  const markerRadius = MARKER_RADIUS * handleScale;
   const selectedIds = multiSelected.length ? multiSelected : selected ? [selected] : [];
   const resolvedBatchLabel = labels.some((label) => label.id === batchLabel) ? batchLabel : labels[0]?.id ?? "";
   const selectableClasses = labels.filter((label) => label.id !== UNLABELED_ID);
@@ -204,21 +276,35 @@ export default function Home() {
     return () => window.cancelAnimationFrame(frame);
   }, []);
 
+  // Recoloca o scroll assim que o canvas assume o tamanho novo e antes da pintura, para o
+  // ponto ancorado continuar exatamente sob o cursor sem nenhum quadro intermediário.
+  useIsomorphicLayoutEffect(() => {
+    const pending = pendingZoomRef.current;
+    pendingZoomRef.current = null;
+    const scroller = scrollRef.current;
+    const canvas = svgRef.current?.parentElement;
+    if (!pending || !scroller || !canvas) return;
+    const bounds = canvas.getBoundingClientRect();
+    scroller.scrollLeft += bounds.left + pending.anchorX * bounds.width - pending.clientX;
+    scroller.scrollTop += bounds.top + pending.anchorY * bounds.height - pending.clientY;
+  }, [zoom]);
+
   useEffect(() => {
     document.documentElement.dataset.theme = themeMode;
     document.documentElement.lang = language === "pt" ? "pt-BR" : language;
-    localStorage.setItem("visionlabel-theme", themeMode);
-    localStorage.setItem("visionlabel-language", language);
-  }, [language, themeMode]);
+    document.title = copy.appTitle;
+    localStorage.setItem("epiaka-theme", themeMode);
+    localStorage.setItem("epiaka-language", language);
+  }, [copy.appTitle, language, themeMode]);
 
   useEffect(() => {
-    localStorage.setItem("visionlabel-line-thickness", String(lineThickness));
+    localStorage.setItem("epiaka-line-thickness", String(lineThickness));
   }, [lineThickness]);
 
   useEffect(() => {
-    localStorage.removeItem("visionlabel-labels");
-    localStorage.removeItem("visionlabel-annotations");
-    localStorage.removeItem("visionlabel-project-name");
+    localStorage.removeItem("epiaka-labels");
+    localStorage.removeItem("epiaka-annotations");
+    localStorage.removeItem("epiaka-project-name");
   }, []);
 
   useEffect(() => () => {
@@ -265,21 +351,26 @@ export default function Home() {
       setPolygonDraft((points) => points.slice(0, -2));
       return;
     }
+    if (lineDraft.length) {
+      setLineDraft((points) => points.slice(0, -2));
+      return;
+    }
     if (selectedVertex) {
       const annotation = annotations.find((item) => item.id === selectedVertex.annotationId);
       if (!annotation?.pts?.length) return;
       remember();
-      if (annotation.pts.length === 2) {
+      // Abaixo do mínimo a forma deixa de existir: 2 pontos numa linha, 1 num polígono.
+      if (annotation.pts.length <= (annotation.type === "line" ? 4 : 2)) {
         setAnnotations((items) => items.filter((item) => item.id !== selectedVertex.annotationId));
         setSelected(null); setMultiSelected([]); setSelectedVertex(null);
-        showToast("Último nó removido; o polígono foi excluído.");
+        showToast(annotation.type === "line" ? copy.toastLineDeleted : copy.toastPolygonDeleted);
         return;
       }
       const nextPoints = deletePolygonVertex(annotation.pts, selectedVertex.vertexIndex);
       const nextVertexIndex = Math.min(selectedVertex.vertexIndex, nextPoints.length / 2 - 1);
       setAnnotations((items) => items.map((item) => item.id === selectedVertex.annotationId ? { ...item, pts: nextPoints } : item));
       setSelectedVertex({ annotationId: selectedVertex.annotationId, vertexIndex: nextVertexIndex });
-      showToast("Nó removido; Delete continua pelo próximo nó da sequência.");
+      showToast(copy.toastVertexRemoved);
       return;
     }
     if (!selected) return;
@@ -288,7 +379,8 @@ export default function Home() {
     remember();
     setAnnotations((items) => items.filter((annotation) => !ids.includes(annotation.id)));
     setSelected(null); setMultiSelected([]);
-  }, [annotations, multiSelected, polygonDraft.length, remember, selected, selectedVertex, showToast]);
+  }, [annotations, copy.toastLineDeleted, copy.toastPolygonDeleted, copy.toastVertexRemoved, lineDraft.length,
+      multiSelected, polygonDraft.length, remember, selected, selectedVertex, showToast]);
 
   const finishPolygon = useCallback(() => {
     if (polygonDraft.length < 6) return;
@@ -298,14 +390,24 @@ export default function Home() {
     setPolygonDraft([]); setSelected(id); setMultiSelected([id]);
   }, [polygonDraft, remember, current, activeLabel]);
 
+  // Uma linha precisa de apenas dois pontos; o contorno fica aberto.
+  const finishLine = useCallback(() => {
+    if (lineDraft.length < 4) return;
+    remember();
+    const id = makeId("line");
+    setAnnotations((items) => [...items, { id, asset: current, label: activeLabel, type: "line", pts: lineDraft }]);
+    setLineDraft([]); setSelected(id); setMultiSelected([id]);
+  }, [lineDraft, remember, current, activeLabel]);
+
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
       if ((event.target as HTMLElement).tagName === "INPUT") return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); return; }
       if (event.key === "Enter" && tool === "polygon") finishPolygon();
+      if (event.key === "Enter" && tool === "line") finishLine();
       if (event.key === "Escape") {
         setProjectOpen(false); setProjectEditing(false); setProjectSaveOpen(false); setClassManagerOpen(false); setSelectedClassIds([]);
-        setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
+        setPolygonDraft([]); setLineDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
         setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
         annotationDragRef.current = null; setAnnotationDrag(null);
         selectionMarqueeRef.current = null; setSelectionMarquee(null);
@@ -313,9 +415,11 @@ export default function Home() {
         transformDragRef.current = null; setTransformDrag(null); setSnapGuide(null);
         samRequestRef.current += 1; setSamPrompts([]); setSamPreview([]); setSamLoading(false);
         setSelected(null); setMultiSelected([]); setSelectedVertex(null);
+        // Esc sempre abandona a ferramenta em uso e devolve o editor ao modo padrão.
+        setPanStart(null); setStart(null); setTool("select");
       }
       if (event.key === "Delete" || event.key === "Backspace") { event.preventDefault(); deleteSelection(); }
-      const tools: Record<string, Tool> = { v: "select", h: "pan", b: "box", p: "polygon", f: "freehand", k: "point", s: "sam", t: "transform", r: "reshape" };
+      const tools: Record<string, Tool> = { v: "select", h: "pan", b: "box", p: "polygon", f: "freehand", l: "line", k: "point", s: "sam", t: "transform", r: "reshape" };
       const nextTool = tools[event.key.toLowerCase()];
       if (nextTool) {
         if (nextTool === "sam" && !samEndpoint) {
@@ -330,10 +434,10 @@ export default function Home() {
     };
     addEventListener("keydown", keydown);
     return () => removeEventListener("keydown", keydown);
-  }, [deleteSelection, finishPolygon, labels, samEndpoint, tool, undo]);
+  }, [deleteSelection, finishLine, finishPolygon, labels, samEndpoint, tool, undo]);
 
   function resetDrafts() {
-    setPolygonDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
+    setPolygonDraft([]); setLineDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
     setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
     annotationDragRef.current = null; setAnnotationDrag(null);
     selectionMarqueeRef.current = null; setSelectionMarquee(null);
@@ -347,28 +451,46 @@ export default function Home() {
     return { x: Math.max(0, Math.min(1000, (clientX - bounds.left) / bounds.width * 1000)), y: Math.max(0, Math.min(650, (clientY - bounds.top) / bounds.height * 650)) };
   }
 
-  function zoomWithWheel(event: React.WheelEvent<HTMLDivElement>) {
-    if (!event.shiftKey) return;
-    event.preventDefault();
-    const wheelDelta = event.deltaY || event.deltaX;
-    if (!wheelDelta) return;
-    const nextZoom = Math.max(10, Math.min(400, zoom + (wheelDelta < 0 ? 10 : -10)));
-    if (nextZoom === zoom) return;
+  // Aplica um novo zoom guardando o ponto que deve permanecer parado: o cursor quando ele
+  // está sobre o canvas, senão o centro da viewport. A recolocação do scroll acontece no
+  // layout effect abaixo, já com o canvas no tamanho novo.
+  const applyZoom = useCallback((nextZoom: number, anchor?: { x: number; y: number }) => {
+    const target = Math.max(10, Math.min(400, Math.round(nextZoom)));
+    if (target === zoom) return;
     const scroller = scrollRef.current;
     const canvas = svgRef.current?.parentElement;
-    if (!scroller || !canvas) { setZoom(nextZoom); return; }
-    const oldBounds = canvas.getBoundingClientRect();
-    const clientX = event.clientX;
-    const clientY = event.clientY;
-    const anchorX = Math.max(0, Math.min(1, (clientX - oldBounds.left) / oldBounds.width));
-    const anchorY = Math.max(0, Math.min(1, (clientY - oldBounds.top) / oldBounds.height));
-    setZoom(nextZoom);
-    requestAnimationFrame(() => {
-      const newBounds = canvas.getBoundingClientRect();
-      scroller.scrollLeft += newBounds.left + anchorX * newBounds.width - clientX;
-      scroller.scrollTop += newBounds.top + anchorY * newBounds.height - clientY;
-    });
-  }
+    if (!scroller || !canvas) { setZoom(target); return; }
+    const viewport = scroller.getBoundingClientRect();
+    const focus = anchor ?? zoomAnchorRef.current
+      ?? { x: viewport.left + viewport.width / 2, y: viewport.top + viewport.height / 2 };
+    const clientX = Math.max(viewport.left, Math.min(viewport.right, focus.x));
+    const clientY = Math.max(viewport.top, Math.min(viewport.bottom, focus.y));
+    const bounds = canvas.getBoundingClientRect();
+    pendingZoomRef.current = {
+      clientX, clientY,
+      anchorX: Math.max(0, Math.min(1, (clientX - bounds.left) / bounds.width)),
+      anchorY: Math.max(0, Math.min(1, (clientY - bounds.top) / bounds.height)),
+    };
+    setZoom(target);
+  }, [zoom]);
+
+  // O wheel precisa de listener nativo com passive:false. O React registra `onWheel` como
+  // passivo (react-dom: "wheel" entra na mesma lista de touchstart/touchmove), então ali o
+  // preventDefault() é ignorado e o Chrome ainda aplica o scroll nativo de Shift + roda —
+  // que é horizontal e arrastava a imagem para o lado a cada passo de zoom.
+  useEffect(() => {
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    const onWheel = (event: WheelEvent) => {
+      if (!event.shiftKey && !event.ctrlKey) return;
+      event.preventDefault();
+      const wheelDelta = event.deltaY || event.deltaX;
+      if (!wheelDelta) return;
+      applyZoom(zoom + (wheelDelta < 0 ? 10 : -10), { x: event.clientX, y: event.clientY });
+    };
+    scroller.addEventListener("wheel", onWheel, { passive: false });
+    return () => scroller.removeEventListener("wheel", onWheel);
+  }, [applyZoom, mounted, zoom]);
 
   function fitImageToViewport() {
     const scroller = scrollRef.current;
@@ -398,10 +520,10 @@ export default function Home() {
     const requestId = ++samRequestRef.current;
     setSamLoading(true);
     try {
-      const preview = await requestSamMask({ endpoint: samEndpoint, asset, prompts });
+      const preview = await requestSamMask({ endpoint: samEndpoint, asset, prompts, copy });
       if (requestId === samRequestRef.current) setSamPreview(preview);
     } catch (error) {
-      if (requestId === samRequestRef.current) showToast(error instanceof Error ? error.message : "Falha ao consultar o SAM.");
+      if (requestId === samRequestRef.current) showToast(error instanceof Error ? error.message : copy.toastSamFailed);
     } finally {
       if (requestId === samRequestRef.current) setSamLoading(false);
     }
@@ -433,6 +555,7 @@ export default function Home() {
       if (closeToFirst) finishPolygon();
       else setPolygonDraft((points) => [...points, point.x, point.y]);
     }
+    if (tool === "line") setLineDraft((points) => [...points, point.x, point.y]);
     if (tool === "freehand" && !freehandDrawing) { setFreehandDraft([point.x, point.y]); setFreehandDrawing(true); }
     if (tool === "reshape" && activeAnnotation?.type === "polygon") {
       if (reshapeDrawing) finishReshape(point);
@@ -503,12 +626,13 @@ export default function Home() {
     if (freehandDraft.length < 6) { setFreehandDraft([]); return; }
     remember(); const id = makeId("freehand");
     setAnnotations((items) => [...items, { id, asset: current, label: activeLabel, type: "polygon", pts: simplifyPolygon(freehandDraft, 2.2) }]);
-    setFreehandDraft([]); setSelected(id); setMultiSelected([id]); showToast("Polígono criado. A mão livre continua ativa.");
+    setFreehandDraft([]); setSelected(id); setMultiSelected([id]); showToast(copy.toastFreehandDone);
   }
 
   function finishDrawingWithRightClick(event: React.MouseEvent<SVGSVGElement>) {
     event.preventDefault();
     if (tool === "polygon" && polygonDraft.length >= 6) finishPolygon();
+    if (tool === "line" && lineDraft.length >= 4) finishLine();
     if (tool === "freehand" && freehandDrawing) finishFreehand();
   }
 
@@ -528,15 +652,15 @@ export default function Home() {
     if (annotation?.type !== "polygon" || path.length < 6) return;
     const result = reshapePolygon(annotation.pts ?? [], path);
     if (!result.points) {
-      if (result.reason === "mixed") showToast("Operação inválida: comece e termine ambos dentro ou ambos fora do polígono.");
-      else if (result.reason === "direction") showToast(result.mode === "add" ? "O traço precisa sair do polígono para adicionar área." : "O traço precisa atravessar o polígono para remover área.");
-      else showToast("O traço precisa cruzar a borda do polígono duas vezes.");
+      if (result.reason === "mixed") showToast(copy.toastReshapeMixed);
+      else if (result.reason === "direction") showToast(result.mode === "add" ? copy.toastReshapeAddDirection : copy.toastReshapeRemoveDirection);
+      else showToast(copy.toastReshapeCross);
       return;
     }
     remember();
     setAnnotations((items) => items.map((item) => item.id === annotation.id ? { ...item, pts: result.points! } : item));
     setSelectedVertex(null);
-    showToast(result.mode === "add" ? "Área adicionada ao polígono." : "Área removida do polígono.");
+    showToast(result.mode === "add" ? copy.toastReshapeAdded : copy.toastReshapeRemoved);
   }
 
   function finishSelectionMarquee() {
@@ -563,12 +687,12 @@ export default function Home() {
     if (!annotation?.pts || !splitStart || !splitEnd) return;
     const parts = splitPolygon(annotation.pts, splitStart, splitEnd);
     setSplitStart(null); setSplitEnd(null);
-    if (parts.length < 2) { showToast("A linha precisa atravessar o polígono de uma borda à outra."); return; }
+    if (parts.length < 2) { showToast(copy.toastSplitNeedsCross); return; }
     remember();
     const splitId = makeId("split");
     const created = parts.map((points, index) => ({ ...annotation, id: `${splitId}-${index}`, pts: points }));
     setAnnotations((items) => [...items.filter((item) => item.id !== annotation.id), ...created]);
-    setSelected(created[0].id); setMultiSelected(created.map((item) => item.id)); showToast(`Polígono dividido em ${created.length} partes.`);
+    setSelected(created[0].id); setMultiSelected(created.map((item) => item.id)); showToast(fill(copy.toastSplitDone, { n: created.length }));
   }
 
   function beginAnnotationDrag(event: React.PointerEvent<SVGElement>, annotation: Annotation) {
@@ -658,7 +782,7 @@ export default function Home() {
     if (!transformDragRef.current) return;
     event.preventDefault(); event.stopPropagation();
     try { if (event.currentTarget.hasPointerCapture(event.pointerId)) event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* no-op */ }
-    transformDragRef.current = null; setTransformDrag(null); showToast("Transformação aplicada. A ferramenta continua ativa.");
+    transformDragRef.current = null; setTransformDrag(null); showToast(copy.toastTransformApplied);
   }
 
   function captureVertexPointer(event: React.PointerEvent<SVGCircleElement>, drag: VertexDrag) {
@@ -757,27 +881,27 @@ export default function Home() {
     if (activeAnnotation?.type !== "polygon") return;
     remember();
     setAnnotations((items) => items.map((item) => item.id === activeAnnotation.id ? { ...item, pts: simplifyPolygon(item.pts ?? [], 6) } : item));
-    showToast("Geometria simplificada sem perder o contorno principal.");
+    showToast(copy.toastSimplified);
   }
 
   function duplicateSelected() {
     if (activeAnnotation?.type !== "polygon") return;
     remember(); const id = makeId("copy");
     setAnnotations((items) => [...items, { ...activeAnnotation, id, pts: movePolygon(activeAnnotation.pts ?? [], 22, 22) }]);
-    setSelected(id); setMultiSelected([id]); showToast("Polígono duplicado.");
+    setSelected(id); setMultiSelected([id]); showToast(copy.toastDuplicated);
   }
 
   function mergeSelected() {
     if (selectedPolygons.length < 2) return;
-    if (new Set(selectedPolygons.map((annotation) => annotation.label)).size > 1) { showToast("Para unir, selecione polígonos da mesma classe."); return; }
+    if (new Set(selectedPolygons.map((annotation) => annotation.label)).size > 1) { showToast(copy.toastMergeSameClass); return; }
     const result = unionPolygons(selectedPolygons.map((annotation) => annotation.pts ?? []));
-    if (!result.length) { showToast("Não foi possível unir estas geometrias."); return; }
+    if (!result.length) { showToast(copy.toastMergeFailed); return; }
     remember();
     const source = selectedPolygons[0];
     const mergeId = makeId("merge");
     const created = result.map((points, index) => ({ ...source, id: `${mergeId}-${index}`, pts: points }));
     setAnnotations((items) => [...items.filter((item) => !multiSelected.includes(item.id)), ...created]);
-    setSelected(created[0].id); setMultiSelected(created.map((item) => item.id)); showToast("Polígonos unidos.");
+    setSelected(created[0].id); setMultiSelected(created.map((item) => item.id)); showToast(copy.toastMerged);
   }
 
   function files(list: FileList | null) {
@@ -812,16 +936,18 @@ export default function Home() {
     const existing = labels.find((label) => label.name.toLocaleLowerCase() === name.toLocaleLowerCase());
     if (existing) {
       setActiveLabel(existing.id); setBatchLabel(existing.id); setNewLabel("");
-      showToast(`${existing.name} já existe e agora é a classe ativa.`);
+      showToast(fill(copy.toastClassExists, { name: existing.name }));
       requestAnimationFrame(() => labelInputRef.current?.focus());
       return;
     }
     const id = makeId("label");
     const key = Array.from({ length: 9 }, (_, index) => String(index + 1)).find((candidate) => !labels.some((label) => label.key === candidate)) ?? "";
-    setLabels((items) => [...items, { id, name, color: newLabelColor, key }]);
+    const created: Label = { id, name, color: newLabelColor, key };
+    setLabels((items) => [...items, created]);
     setActiveLabel(id); setBatchLabel(id); setNewLabel(""); setSaved(false);
-    setNewLabelColor(colors[(labels.length + 1) % colors.length]);
-    showToast(`${name} criada e selecionada.`);
+    // Já deixa a próxima classe com uma cor inédita; o usuário ainda pode trocá-la à mão.
+    setNewLabelColor(nextLabelColor([...labels, created]));
+    showToast(fill(copy.toastClassCreated, { name }));
     requestAnimationFrame(() => labelInputRef.current?.focus());
   }
 
@@ -875,8 +1001,8 @@ export default function Home() {
     setSelectedClassIds((items) => items.filter((id) => !deletedIds.has(id)));
     setPendingDeleteClassIds([]); setSaved(false);
     showToast(reassignedCount
-      ? `${deletedLabels.length} classe(s) excluída(s). ${reassignedCount} anotação(ões) foram movidas para ${copy.unlabeled}.`
-      : `${deletedLabels.length} classe(s) excluída(s).`);
+      ? fill(copy.toastClassesDeletedMoved, { n: deletedLabels.length, m: reassignedCount, label: copy.unlabeled })
+      : fill(copy.toastClassesDeleted, { n: deletedLabels.length }));
   }
 
   function reclassifySelection() {
@@ -886,25 +1012,36 @@ export default function Home() {
     remember();
     setAnnotations((items) => items.map((annotation) => selectedIds.includes(annotation.id) ? { ...annotation, label: resolvedBatchLabel } : annotation));
     setSaved(false);
-    showToast(`${selectedIds.length} anotação(ões) alteradas para ${label.name}.`);
+    showToast(fill(copy.toastReclassified, { n: selectedIds.length, name: label.name }));
   }
 
   function beginProjectRename() {
-    setProjectNameDraft(projectName); setProjectEditing(true);
-    requestAnimationFrame(() => projectInputRef.current?.focus());
+    renameCancelledRef.current = false;
+    setProjectNameDraft(projectName); setProjectEditing(true); setProjectOpen(false);
+    requestAnimationFrame(() => { projectInputRef.current?.focus(); projectInputRef.current?.select(); });
+  }
+
+  // Esc desiste da edição. A marca no ref existe porque sair do modo de edição desmonta o
+  // campo e pode disparar o blur, que também salva — sem ela, Esc acabaria confirmando.
+  function cancelProjectRename() {
+    renameCancelledRef.current = true;
+    setProjectEditing(false);
   }
 
   function saveProjectName() {
+    if (renameCancelledRef.current) { renameCancelledRef.current = false; return; }
     const name = projectNameDraft.trim();
-    if (!name) return;
-    setProjectName(name); setProjectEditing(false); setProjectOpen(false); setSaved(false);
-    showToast("Nome do projeto atualizado.");
+    setProjectEditing(false); setProjectOpen(false);
+    if (!name || name === projectName) return;
+    setProjectName(name); setSaved(false);
+    showToast(copy.toastProjectRenamed);
   }
 
   function requestOpenProject() {
     if (!saved && !window.confirm(copy.replaceUnsavedProject)) return;
     const picker = openProjectInputRef.current;
     if (!picker) return;
+    setProjectOpen(false);
     picker.value = "";
     try {
       if (typeof picker.showPicker === "function") picker.showPicker();
@@ -921,11 +1058,11 @@ export default function Home() {
     idCounter.current = 0;
     setProjectName(copy.newProject); setProjectNameDraft("");
     setAssets([]); setCurrent(""); setAnnotations([]); setLabels([unlabeledLabel(copy.unlabeled)]);
-    setActiveLabel(UNLABELED_ID); setBatchLabel(UNLABELED_ID); setHistory([]);
+    setActiveLabel(UNLABELED_ID); setBatchLabel(UNLABELED_ID); setHistory([]); setNewLabelColor(colors[0]);
     setSelected(null); setMultiSelected([]); setSelectedVertex(null); setSelectedClassIds([]);
     setPendingDeleteAnnotationIds([]); setPendingDeleteClassIds([]); setHiddenAnnotations([]); setHiddenLabels([]);
     setSearch(""); setQuality(false); setTool("select"); setZoom(92); resetDrafts();
-    setProjectOpen(false); setProjectEditing(false); setProjectSaveOpen(false); setExportOpen(false);
+    setProjectOpen(false); setProjectEditing(false); setProjectSaveOpen(false);
     setClassManagerOpen(false); setLeftOpen(false); setRightOpen(false); setSaved(true);
     showToast(copy.newProjectReady);
   }
@@ -933,12 +1070,13 @@ export default function Home() {
   async function loadProjectFile(file: File) {
     setProjectBusy(true);
     try {
-      const loaded = await openVisionLabelProject(file);
+      const loaded = await openEpiakaProject(file, copy);
       projectObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       projectObjectUrlsRef.current = loaded.objectUrls;
       const firstLabel = loaded.labels.find((label) => label.id !== UNLABELED_ID) ?? loaded.labels[0];
       setProjectName(loaded.projectName); setAssets(loaded.assets); setAnnotations(loaded.annotations); setLabels(loaded.labels);
       setCurrent(loaded.assets[0].id); setActiveLabel(firstLabel.id); setBatchLabel(firstLabel.id);
+      setNewLabelColor(nextLabelColor(loaded.labels));
       setHistory([]); setSelected(null); setMultiSelected([]); setSelectedVertex(null); setHiddenAnnotations([]); setHiddenLabels([]);
       setSearch(""); setTool("select"); resetDrafts(); setProjectOpen(false); setLeftOpen(loaded.missingImages > 0); setSaved(true);
       showToast(loaded.missingImages
@@ -956,15 +1094,15 @@ export default function Home() {
       return;
     }
     setProjectSaveMode(missingProjectImages ? "annotations" : "complete");
-    setExportOpen(false); setProjectOpen(false); setProjectSaveOpen(true);
+    setProjectOpen(false); setProjectSaveOpen(true);
   }
 
   async function savePortableProject(mode: ProjectSaveMode) {
     if (mode === "complete" && missingProjectImages) return;
     setProjectBusy(true);
     try {
-      const fileName = await saveVisionLabelProject(projectName, assets, labels, annotations, mode);
-      setSaved(true); setExportOpen(false); setProjectOpen(false); setProjectSaveOpen(false);
+      const fileName = await saveEpiakaProject(projectName, assets, labels, annotations, mode, copy);
+      setSaved(true); setProjectOpen(false); setProjectSaveOpen(false);
       showToast(`${copy.projectSaved}: ${fileName}`);
     } catch (error) {
       showToast(error instanceof Error ? error.message : copy.projectSaveError);
@@ -972,14 +1110,14 @@ export default function Home() {
   }
 
   async function exportData(kind: "coco" | "yolo" | "project") {
-    if (!assets.length) { setExportOpen(false); setLeftOpen(true); showToast(copy.emptyProjectHint); return; }
+    if (!assets.length) { setProjectOpen(false); setLeftOpen(true); showToast(copy.emptyProjectHint); return; }
     if (kind === "project") { openSaveProjectDialog(); return; }
     setExporting(true);
     try {
       if (kind === "coco") exportCoco(assets, labels, annotations);
-      if (kind === "yolo") await exportYoloZip(assets, labels, annotations);
-      setExportOpen(false); showToast(kind === "yolo" ? "Pacote YOLO gerado e download iniciado." : "Arquivo gerado e download iniciado.");
-    } catch { showToast("Não foi possível gerar a exportação."); }
+      if (kind === "yolo") await exportYoloZip(assets, labels, annotations, copy.yoloReadme);
+      setProjectOpen(false); showToast(kind === "yolo" ? copy.toastExportYolo : copy.toastExportFile);
+    } catch { showToast(copy.toastExportFailed); }
     finally { setExporting(false); }
   }
 
@@ -996,7 +1134,7 @@ export default function Home() {
       const health = await response.json() as { status?: string; device?: string; model_type?: string };
       if (health.status !== "ready") {
         setSamConnectionState("loading");
-        setSamRuntime(health.model_type ? `${health.model_type} · ${health.device ?? "carregando"}` : "");
+        setSamRuntime(health.model_type ? `${health.model_type} · ${health.device ?? copy.samLoadingDevice}` : "");
         return false;
       }
       setSamConnectionState("ready");
@@ -1014,11 +1152,11 @@ export default function Home() {
   async function connectSam() {
     const endpoint = samEndpointDraft.trim();
     if (!await probeSam(endpoint)) {
-      showToast("O SAM ainda não está pronto. Abra o instalador, mantenha a janela em execução e tente novamente.");
+      showToast(copy.toastSamNotReady);
       return;
     }
-    setSamEndpoint(endpoint); localStorage.setItem("visionlabel-sam-endpoint", endpoint);
-    clearSam(); setSamPromptMode(1); setSamOpen(false); setTool("sam"); showToast("SAM local conectado. Clique sobre o objeto na imagem.");
+    setSamEndpoint(endpoint); localStorage.setItem("epiaka-sam-endpoint", endpoint);
+    clearSam(); setSamPromptMode(1); setSamOpen(false); setTool("sam"); showToast(copy.toastSamConnected);
   }
   function activateSam() {
     if (tool === "sam") {
@@ -1032,7 +1170,8 @@ export default function Home() {
     remember(); const id = makeId("sam");
     setAnnotations((items) => [...items, { id, asset: current, label: activeLabel, type: "polygon", pts: [...samPreview] }]);
     setSelected(id); setMultiSelected([id]); setSelectedVertex(null); setBatchLabel(activeLabel);
-    clearSam(); setTool("select"); showToast(copy.samSavedEditable);
+    // A ferramenta continua ativa para o próximo objeto; só os prompts são zerados.
+    clearSam(); setSamPromptMode(1); showToast(copy.samSavedToolActive);
   }
   function clearSam() { samRequestRef.current += 1; setSamPrompts([]); setSamPreview([]); setSamLoading(false); }
   function restartSam() { clearSam(); setSamPromptMode(1); showToast(copy.samRestarted); }
@@ -1043,29 +1182,46 @@ export default function Home() {
     chooseImage(assets[Math.max(0, Math.min(assets.length - 1, index + direction))].id);
   }
 
-  if (!mounted) return <main className="shell app-loading" aria-busy="true"><div className="loading-card"><span className="mark"><Pentagon size={18} /></span><b>vision<span>label</span></b></div></main>;
+  if (!mounted) return <main className="shell app-loading" aria-busy="true"><div className="loading-card"><BrandLockup height={34} /></div></main>;
 
   return <main className="shell">
     <header className="topbar">
-      <input hidden ref={openProjectInputRef} type="file" accept=".visionlabel,application/zip,application/vnd.visionlabel.project+zip" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void loadProjectFile(file); }} />
+      <input hidden ref={openProjectInputRef} type="file" accept=".epka,application/zip,application/vnd.epiaka.project+zip" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void loadProjectFile(file); }} />
+      <div className="topbar-main">
       <div className="brand-side">
         <button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button>
-        <div className="mark"><Pentagon size={19} /></div><b className="brand">vision<span>label</span></b><i />
-        <div className="project-switcher" ref={projectSwitcherRef}>
-          <button className={`project ${projectOpen ? "open" : ""}`} aria-haspopup="dialog" aria-expanded={projectOpen} onClick={() => { setProjectOpen((value) => !value); setProjectEditing(false); }}><em />{projectName} <ChevronDown size={14} /></button>
-          {projectOpen && <section className="project-pop" role="dialog" aria-label={copy.projectCurrent}>
-            <p>{copy.projectCurrent}</p>
-            {projectEditing ? <div className="project-rename"><input ref={projectInputRef} value={projectNameDraft} onChange={(event) => setProjectNameDraft(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter") saveProjectName(); if (event.key === "Escape") setProjectEditing(false); }} /><button onClick={saveProjectName}><Check size={14} />{copy.save}</button></div> : <>
-              <div className="project-summary"><span><em />{projectName}</span><small>{assets.length} {copy.projectImages} · {annotations.length} {copy.projectAnnotations}</small></div>
-              <button onClick={requestNewProject}><Plus size={14} /><span><b>{copy.newProject}</b><small>{copy.newProjectHint}</small></span></button>
-              <button onClick={requestOpenProject}><FolderUp size={14} /><span><b>{copy.openProject}</b><small>{copy.openProjectHint}</small></span></button>
-              <button onClick={openSaveProjectDialog}><Save size={14} /><span><b>{copy.saveProject}</b><small>{copy.saveProjectHint}</small></span></button>
-              <button onClick={beginProjectRename}><Pencil size={14} /><span><b>{copy.renameProject}</b><small>{projectName}</small></span></button>
-            </>}
-          </section>}
-        </div>
+        <BrandLockup height={28} /><i />
+        {projectEditing
+          ? <input className="project-name-input" ref={projectInputRef} value={projectNameDraft}
+              aria-label={copy.renameProject} maxLength={80}
+              onChange={(event) => setProjectNameDraft(event.target.value)}
+              onBlur={saveProjectName}
+              onKeyDown={(event) => { if (event.key === "Enter") saveProjectName(); if (event.key === "Escape") cancelProjectRename(); }} />
+          : <button className="project-name" title={copy.renameProject} onClick={beginProjectRename}><em /><span>{projectName}</span><Pencil size={13} /></button>}
       </div>
-      <div className="head-actions"><span className={`save ${saved ? "done" : ""}`}><HardDriveDownload size={14} />{saved ? copy.saved : copy.saving}</span><button className="open-project-main" disabled={projectBusy} onClick={requestOpenProject}><FolderUp size={15} /><span>{copy.openProject}</span></button><button className="project-save-main" disabled={projectBusy} onClick={openSaveProjectDialog}>{projectBusy ? <LoaderCircle className="spin" size={15} /> : <Save size={15} />}<span>{copy.saveProject}</span></button><button className={`sam-connection ${samEndpoint ? "connected" : ""}`} onClick={openSamSettings}><Link2 size={14} />{samEndpoint ? copy.samActive : copy.activateSam}</button><div className="export"><button className="export-main" disabled={exporting || projectBusy} onClick={() => setExportOpen(!exportOpen)}>{exporting ? <LoaderCircle className="spin" size={16} /> : <Download size={16} />} {copy.export} <ChevronDown size={13} /></button>{exportOpen && <div className="export-pop"><p>{copy.exportFormat}</p><button onClick={() => void exportData("coco")}><b>COCO JSON</b><span>{copy.cocoDesc}</span></button><button onClick={() => void exportData("yolo")}><b>YOLO ZIP</b><span>{copy.yoloDesc}</span></button><button onClick={() => void exportData("project")}><b>VisionLabel</b><span>{copy.projectBackup}</span></button></div>}</div><button className="preferences-button" title={copy.preferences} aria-label={copy.preferences} onClick={() => setPreferencesOpen(true)}><Languages size={17} /></button><span className="local-mode" title={copy.localOnlyHint}><ShieldCheck size={14} />{copy.localOnly}</span><button className="mobile" onClick={() => setRightOpen(true)} aria-label={copy.classes}><MoreHorizontal size={19} /></button></div>
+      {/* Abrir, salvar, exportar e preferências vivem no menu Arquivo; aqui ficam apenas o
+          estado da sessão, a conexão do SAM e o selo de execução local. */}
+      <div className="head-actions"><span className={`save ${saved ? "done" : ""}`}>{projectBusy ? <LoaderCircle className="spin" size={14} /> : <HardDriveDownload size={14} />}{saved ? copy.saved : copy.saving}</span><button className={`sam-connection ${samEndpoint ? "connected" : ""}`} onClick={openSamSettings}><Link2 size={14} />{samEndpoint ? copy.samActive : copy.activateSam}</button><span className="local-mode" title={copy.localOnlyHint}><ShieldCheck size={14} />{copy.localOnly}</span><button className="mobile" onClick={() => setRightOpen(true)} aria-label={copy.classes}><MoreHorizontal size={19} /></button></div>
+      </div>
+      <nav className="menubar" aria-label={copy.fileMenu}>
+        <div className="menu" ref={projectSwitcherRef}>
+          <button className={`menu-trigger ${projectOpen ? "open" : ""}`} aria-haspopup="menu" aria-expanded={projectOpen} onClick={() => { setProjectOpen((value) => !value); setProjectEditing(false); }}>{copy.fileMenu}<ChevronDown size={13} /></button>
+          {projectOpen && <div className="project-pop menu-pop" role="menu" aria-label={copy.fileMenu}>
+            <div className="project-summary"><span><em />{projectName}</span><small>{assets.length} {copy.projectImages} · {annotations.length} {copy.projectAnnotations}</small></div>
+              <button role="menuitem" onClick={requestNewProject}><Plus size={14} /><span><b>{copy.newProject}</b><small>{copy.newProjectHint}</small></span></button>
+              <button role="menuitem" disabled={projectBusy} onClick={requestOpenProject}><FolderUp size={14} /><span><b>{copy.openProject}</b><small>{copy.openProjectHint}</small></span></button>
+              <button role="menuitem" disabled={projectBusy} onClick={openSaveProjectDialog}><Save size={14} /><span><b>{copy.saveProject}</b><small>{copy.saveProjectHint}</small></span></button>
+              <button role="menuitem" onClick={beginProjectRename}><Pencil size={14} /><span><b>{copy.renameProject}</b><small>{projectName}</small></span></button>
+              <i className="menu-separator" />
+              <p>{copy.exportFormat}</p>
+              <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("coco")}><FileText size={14} /><span><b>COCO JSON</b><small>{copy.cocoDesc}</small></span></button>
+              <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("yolo")}><HardDriveDownload size={14} /><span><b>YOLO ZIP</b><small>{copy.yoloDesc}</small></span></button>
+              <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("project")}><Download size={14} /><span><b>Epiaka</b><small>{copy.projectBackup}</small></span></button>
+              <i className="menu-separator" />
+              <button role="menuitem" onClick={() => { setProjectOpen(false); setPreferencesOpen(true); }}><Settings2 size={14} /><span><b>{copy.preferences}</b><small>{copy.appearance} · {copy.language}</small></span></button>
+          </div>}
+        </div>
+      </nav>
     </header>
 
     <div className="workspace">
@@ -1083,57 +1239,67 @@ export default function Home() {
       <section className="editor">
         <div className="tools">
           <div><ToolButton title={copy.select} keyHint="V" active={tool === "select"} onClick={() => setTool("select")}><MousePointer2 size={18} /></ToolButton><ToolButton title={`${copy.pan} · ${copy.middlePan}`} keyHint="H" active={tool === "pan"} onClick={() => setTool("pan")}><Hand size={18} /></ToolButton></div><i />
-          <div><ToolButton title={copy.box} keyHint="B" active={tool === "box"} onClick={() => setTool("box")}><Box size={18} /></ToolButton><ToolButton title={copy.polygon} keyHint="P" active={tool === "polygon"} onClick={() => setTool("polygon")}>{tool === "polygon" ? <PenTool size={18} /> : <Pentagon size={18} />}</ToolButton><ToolButton title={copy.freehand} keyHint="F" active={tool === "freehand"} onClick={() => setTool("freehand")}><PenLine size={18} /></ToolButton><ToolButton title={copy.point} keyHint="K" active={tool === "point"} onClick={() => setTool("point")}><span className="point-icon" /></ToolButton><ToolButton title={tool === "sam" ? copy.samDeactivate : copy.sam} keyHint="S" active={tool === "sam"} onClick={activateSam}><WandSparkles size={18} /></ToolButton></div><i />
+          <div><ToolButton title={copy.box} keyHint="B" active={tool === "box"} onClick={() => setTool("box")}><Square size={18} /></ToolButton><ToolButton title={copy.polygon} keyHint="P" active={tool === "polygon"} onClick={() => setTool("polygon")}>{tool === "polygon" ? <PenTool size={18} /> : <Pentagon size={18} />}</ToolButton><ToolButton title={copy.freehand} keyHint="F" active={tool === "freehand"} onClick={() => setTool("freehand")}><PenLine size={18} /></ToolButton><ToolButton title={copy.line} keyHint="L" active={tool === "line"} onClick={() => setTool("line")}><Spline size={18} /></ToolButton><ToolButton title={copy.point} keyHint="K" active={tool === "point"} onClick={() => setTool("point")}><span className="point-icon" /></ToolButton><ToolButton title={tool === "sam" ? copy.samDeactivate : copy.sam} keyHint="S" active={tool === "sam"} onClick={activateSam}><WandSparkles size={18} /></ToolButton></div><i />
           <div className="edit-tools"><ToolButton title={copy.simplify} disabled={activeAnnotation?.type !== "polygon"} onClick={simplifySelected}><ListRestart size={18} /></ToolButton><ToolButton title={copy.duplicate} disabled={activeAnnotation?.type !== "polygon"} onClick={duplicateSelected}><Copy size={17} /></ToolButton><ToolButton title={copy.merge} disabled={selectedPolygons.length < 2} onClick={mergeSelected}><Combine size={18} /></ToolButton><ToolButton title={copy.split} disabled={activeAnnotation?.type !== "polygon"} active={tool === "split"} onClick={() => setTool("split")}><Scissors size={17} /></ToolButton><ToolButton title={copy.transform} keyHint="T" disabled={activeAnnotation?.type !== "polygon"} active={tool === "transform"} onClick={() => setTool("transform")}><Maximize2 size={17} /></ToolButton><ToolButton title={copy.reshape} keyHint="R" disabled={activeAnnotation?.type !== "polygon"} active={tool === "reshape"} onClick={() => setTool("reshape")}><PenTool size={17} /></ToolButton><ToolButton title={snapping ? copy.snapOn : copy.snapOff} active={snapping} onClick={() => { setSnapping((value) => !value); setSnapGuide(null); }}><Magnet size={17} /></ToolButton></div><i />
-          <div><ToolButton title="Desfazer" disabled={!history.length} onClick={undo}><Undo2 size={18} /></ToolButton><ToolButton title="Refazer" disabled><Redo2 size={18} /></ToolButton><ToolButton title={selectedVertex ? "Excluir nó e avançar na sequência" : polygonDraft.length ? "Remover último ponto criado" : "Excluir forma inteira"} disabled={!selected && !polygonDraft.length} onClick={deleteSelection}><Trash2 size={18} /></ToolButton></div><span className="spacer" />
-          <label className="stroke-control" title={copy.lineThickness}><PenLine size={14} /><input aria-label={copy.lineThickness} type="range" min="1" max="10" step="1" value={lineThickness} onChange={(event) => setLineThickness(Number(event.target.value))} /><output>{lineThickness}px</output></label><div className="zoom" title={copy.shiftZoom}><button aria-label={copy.zoomOut} onClick={() => setZoom((value) => Math.max(10, value - 10))}><ZoomOut size={15} /></button><span>{zoom}%</span><button aria-label={copy.zoomIn} onClick={() => setZoom((value) => Math.min(400, value + 10))}><ZoomIn size={15} /></button></div><ToolButton title={copy.fitImage} onClick={fitImageToViewport}><Focus size={16} /></ToolButton>
+          <div><ToolButton title={copy.undo} disabled={!history.length} onClick={undo}><Undo2 size={18} /></ToolButton><ToolButton title={copy.redo} disabled><Redo2 size={18} /></ToolButton><ToolButton title={selectedVertex ? copy.deleteVertexTitle : polygonDraft.length ? copy.removeLastPointTitle : copy.deleteShape} disabled={!selected && !polygonDraft.length} onClick={deleteSelection}><Trash2 size={18} /></ToolButton></div><span className="spacer" />
+          <label className="stroke-control" title={copy.lineThickness}><PenLine size={14} /><input aria-label={copy.lineThickness} type="range" min="1" max="10" step="1" value={lineThickness} onChange={(event) => setLineThickness(Number(event.target.value))} /><output>{lineThickness}px</output></label><div className="zoom" title={copy.shiftZoom}><button aria-label={copy.zoomOut} onClick={() => applyZoom(zoom - 10)}><ZoomOut size={15} /></button><span>{zoom}%</span><button aria-label={copy.zoomIn} onClick={() => applyZoom(zoom + 10)}><ZoomIn size={15} /></button></div><ToolButton title={copy.fitImage} onClick={fitImageToViewport}><Focus size={16} /></ToolButton>
         </div>
 
-        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const projectFile = Array.from(event.dataTransfer.files).find((file) => file.name.toLowerCase().endsWith(".visionlabel")); if (projectFile) { if (saved || window.confirm(copy.replaceUnsavedProject)) void loadProjectFile(projectFile); } else files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onWheel={zoomWithWheel}>{asset ? <div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
+        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const projectFile = Array.from(event.dataTransfer.files).find((file) => file.name.toLowerCase().endsWith(".epka")); if (projectFile) { if (saved || window.confirm(copy.replaceUnsavedProject)) void loadProjectFile(projectFile); } else files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onPointerMove={(event) => { zoomAnchorRef.current = { x: event.clientX, y: event.clientY }; }} onPointerLeave={() => { zoomAnchorRef.current = null; }}>{asset ? <div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          {asset.missing ? <div className="missing-image"><Images size={34} /><b>{asset.name}</b><p>{copy.imageMissingHint}</p><button onClick={() => input.current?.click()}><FolderOpen size={15} />{copy.reloadProjectImages}</button></div> : <img crossOrigin="anonymous" src={asset.src} alt={`Imagem para anotação: ${asset.name}`} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (asset.width !== image.naturalWidth || asset.height !== image.naturalHeight) setAssets((items) => items.map((item) => item.id === asset.id ? { ...item, width: image.naturalWidth, height: image.naturalHeight } : item)); }} />}
-          <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onAuxClick={(event) => event.preventDefault()} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => tool === "polygon" && finishPolygon()}>
+          {asset.missing ? <div className="missing-image"><Images size={34} /><b>{asset.name}</b><p>{copy.imageMissingHint}</p><button onClick={() => input.current?.click()}><FolderOpen size={15} />{copy.reloadProjectImages}</button></div> : <img crossOrigin="anonymous" src={asset.src} alt={fill(copy.annotationImageAlt, { name: asset.name })} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (asset.width !== image.naturalWidth || asset.height !== image.naturalHeight) setAssets((items) => items.map((item) => item.id === asset.id ? { ...item, width: image.naturalWidth, height: image.naturalHeight } : item)); }} />}
+          <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onAuxClick={(event) => event.preventDefault()} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => { if (tool === "polygon") finishPolygon(); if (tool === "line") finishLine(); }}>
             {visibleAnnotations.map((annotation) => {
               const label = getLabel(annotation.label);
               const isSelected = multiSelected.includes(annotation.id);
               if (annotation.type === "box") return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><rect x={annotation.x} y={annotation.y} width={annotation.w} height={annotation.h} fill={`${label.color}28`} stroke={label.color} strokeWidth={isSelected ? lineThickness + 2 : lineThickness} /><g transform={`translate(${annotation.x},${(annotation.y ?? 0) - 31})`}><rect width={Math.max(100, label.name.length * 10 + 25)} height="31" rx="5" fill={label.color} /><text x="12" y="21" fontSize="16" fontWeight="700" fill="#112018">{label.name}</text></g></g>;
-              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={tool === "select" ? "movable-annotation" : ""} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? lineThickness + 2 : lineThickness} />{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r={2.1 * handleScale} strokeWidth={1 * handleScale} />)}{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r={polygonHandleRadius(points.length / 2, handleScale)} fill="#fff" stroke={label.color} strokeWidth={Math.max(1.2, polygonHandleRadius(points.length / 2, handleScale) * .46)} /> : null)}</g>;
-              return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><circle cx={annotation.x} cy={annotation.y} r={isSelected ? 17 : 13} fill="#fff" stroke={label.color} strokeWidth="6" /><circle cx={annotation.x} cy={annotation.y} r="4" fill={label.color} /></g>;
+              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={`${tool === "select" ? "movable-annotation" : ""} ${tool === "reshape" && annotation.id === selected ? "reshape-target" : ""}`.trim()} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? lineThickness + 2 : lineThickness} />{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r={markerRadius * .5} strokeWidth={markerRadius * .22} />)}{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r={polygonHandleRadius(points.length / 2, handleScale)} fill="#fff" stroke={label.color} strokeWidth={polygonHandleRadius(points.length / 2, handleScale) * .42} /> : null)}</g>;
+              if (annotation.type === "line") return <g key={annotation.id}>
+                {/* Traço invisível e largo: uma linha fina é alvo pequeno demais para o clique. */}
+                <polyline className={`line-hit ${tool === "select" ? "movable-annotation" : ""}`} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={pointsToSvg(annotation.pts)} strokeWidth={Math.max(14, lineThickness + 12)} />
+                <polyline className="line-shape" points={pointsToSvg(annotation.pts)} stroke={label.color} strokeWidth={isSelected ? lineThickness + 2 : lineThickness} />
+                {tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? [], true).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r={markerRadius * .5} strokeWidth={markerRadius * .22} />)}
+                {tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r={polygonHandleRadius(points.length / 2, handleScale)} fill="#fff" stroke={label.color} strokeWidth={polygonHandleRadius(points.length / 2, handleScale) * .42} /> : null)}
+              </g>;
+              const pointRadius = markerRadius * (isSelected ? 1.32 : 1);
+              return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><circle cx={annotation.x} cy={annotation.y} r={pointRadius} fill="#fff" stroke={label.color} strokeWidth={pointRadius * .42} /><circle cx={annotation.x} cy={annotation.y} r={pointRadius * .34} fill={label.color} /></g>;
             })}
             {selectionMarquee && <rect className="selection-marquee" x={Math.min(selectionMarquee.startX, selectionMarquee.currentX)} y={Math.min(selectionMarquee.startY, selectionMarquee.currentY)} width={Math.abs(selectionMarquee.currentX - selectionMarquee.startX)} height={Math.abs(selectionMarquee.currentY - selectionMarquee.startY)} />}
             {tool === "transform" && activeAnnotation?.type === "polygon" && activePolygonBounds && activePolygonCenter && <g className="transform-overlay">
               <rect x={activePolygonBounds.x} y={activePolygonBounds.y} width={activePolygonBounds.width} height={activePolygonBounds.height} />
               <line x1={activePolygonCenter.x} y1={transformRotationAnchorY} x2={activePolygonCenter.x} y2={transformRotationY} />
-              <circle className="transform-handle rotate-handle" cx={activePolygonCenter.x} cy={transformRotationY} r="10" onPointerDown={(event) => beginTransform(event, activeAnnotation, "rotate")} onPointerMove={moveTransformPointer} onPointerUp={finishTransformPointer} onPointerCancel={finishTransformPointer} />
-              <circle className="transform-handle scale-handle" cx={activePolygonBounds.x + activePolygonBounds.width} cy={activePolygonBounds.y + activePolygonBounds.height} r="10" onPointerDown={(event) => beginTransform(event, activeAnnotation, "scale")} onPointerMove={moveTransformPointer} onPointerUp={finishTransformPointer} onPointerCancel={finishTransformPointer} />
-              <circle className="transform-center" cx={activePolygonCenter.x} cy={activePolygonCenter.y} r="5" />
+              <circle className="transform-handle rotate-handle" cx={activePolygonCenter.x} cy={transformRotationY} r={markerRadius * 1.8} strokeWidth={markerRadius * .42} onPointerDown={(event) => beginTransform(event, activeAnnotation, "rotate")} onPointerMove={moveTransformPointer} onPointerUp={finishTransformPointer} onPointerCancel={finishTransformPointer} />
+              <circle className="transform-handle scale-handle" cx={activePolygonBounds.x + activePolygonBounds.width} cy={activePolygonBounds.y + activePolygonBounds.height} r={markerRadius * 1.8} strokeWidth={markerRadius * .42} onPointerDown={(event) => beginTransform(event, activeAnnotation, "scale")} onPointerMove={moveTransformPointer} onPointerUp={finishTransformPointer} onPointerCancel={finishTransformPointer} />
+              <circle className="transform-center" cx={activePolygonCenter.x} cy={activePolygonCenter.y} r={markerRadius * .9} strokeWidth={markerRadius * .22} />
             </g>}
             {draft && <rect x={draft.x} y={draft.y} width={draft.w} height={draft.h} fill={`${getLabel(activeLabel).color}25`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="9 7" />}
-            {polygonDraft.length > 1 && <g><polyline points={pointsToSvg(polygonDraft)} fill={`${getLabel(activeLabel).color}20`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="9 7" />{polygonDraft.map((coordinate, index, points) => index % 2 === 0 ? <circle className={index === 0 && polygonDraft.length >= 6 ? "polygon-close-point" : ""} key={index} cx={coordinate} cy={points[index + 1]} r={(index === 0 && polygonDraft.length >= 6 ? 6.5 : 4.2) * handleScale} fill={getLabel(activeLabel).color} stroke="#fff" strokeWidth={1.5 * handleScale} /> : null)}</g>}
+            {polygonDraft.length > 1 && <g><polyline points={pointsToSvg(polygonDraft)} fill={`${getLabel(activeLabel).color}20`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="9 7" />{polygonDraft.map((coordinate, index, points) => index % 2 === 0 ? <circle className={index === 0 && polygonDraft.length >= 6 ? "polygon-close-point" : ""} key={index} cx={coordinate} cy={points[index + 1]} r={markerRadius * (index === 0 && polygonDraft.length >= 6 ? 1.35 : 1)} fill={getLabel(activeLabel).color} stroke="#fff" strokeWidth={markerRadius * .32} /> : null)}</g>}
+            {lineDraft.length > 0 && <g>{lineDraft.length > 2 && <polyline className="line-shape" points={pointsToSvg(lineDraft)} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="9 7" />}{lineDraft.map((coordinate, index, points) => index % 2 === 0 ? <circle key={index} cx={coordinate} cy={points[index + 1]} r={markerRadius} fill={getLabel(activeLabel).color} stroke="#fff" strokeWidth={markerRadius * .32} /> : null)}</g>}
             {freehandDraft.length > 1 && <polyline className="freehand-line" points={pointsToSvg(freehandDraft)} fill={`${getLabel(activeLabel).color}22`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} />}
-            {reshapeDraft.length > 1 && <g><polyline className="reshape-line" points={pointsToSvg(reshapeDraft)} />{reshapeDraft.length >= 4 && <><circle className="reshape-endpoint" cx={reshapeDraft[0]} cy={reshapeDraft[1]} r="7" /><circle className="reshape-endpoint" cx={reshapeDraft.at(-2)} cy={reshapeDraft.at(-1)} r="7" /></>}</g>}
+            {reshapeDraft.length > 1 && <g><polyline className="reshape-line" points={pointsToSvg(reshapeDraft)} />{reshapeDraft.length >= 4 && <><circle className="reshape-endpoint" cx={reshapeDraft[0]} cy={reshapeDraft[1]} r={markerRadius * 1.25} strokeWidth={markerRadius * .42} /><circle className="reshape-endpoint" cx={reshapeDraft.at(-2)} cy={reshapeDraft.at(-1)} r={markerRadius * 1.25} strokeWidth={markerRadius * .42} /></>}</g>}
             {splitStart && splitEnd && <line className="split-line" x1={splitStart.x} y1={splitStart.y} x2={splitEnd.x} y2={splitEnd.y} />}
-            {snapGuide && <g className="snap-guide"><circle cx={snapGuide.x} cy={snapGuide.y} r="12" /><line x1={snapGuide.x - 7} y1={snapGuide.y} x2={snapGuide.x + 7} y2={snapGuide.y} /><line x1={snapGuide.x} y1={snapGuide.y - 7} x2={snapGuide.x} y2={snapGuide.y + 7} /></g>}
+            {snapGuide && <g className="snap-guide"><circle cx={snapGuide.x} cy={snapGuide.y} r={markerRadius * 2.2} strokeWidth={markerRadius * .3} /><line x1={snapGuide.x - markerRadius * 1.3} y1={snapGuide.y} x2={snapGuide.x + markerRadius * 1.3} y2={snapGuide.y} strokeWidth={markerRadius * .26} /><line x1={snapGuide.x} y1={snapGuide.y - markerRadius * 1.3} x2={snapGuide.x} y2={snapGuide.y + markerRadius * 1.3} strokeWidth={markerRadius * .26} /></g>}
             {tool === "sam" && samPreview.length >= 6 && <polygon className="sam-mask-preview" points={pointsToSvg(samPreview)} fill={`${getLabel(activeLabel).color}52`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="10 6" />}
-            {tool === "sam" && samPrompts.map((prompt, index) => <g key={index} className={`sam-prompt ${prompt.label ? "positive" : "negative"}`}><circle cx={prompt.x} cy={prompt.y} r="13" /><line x1={prompt.x - 6} y1={prompt.y} x2={prompt.x + 6} y2={prompt.y} />{prompt.label === 1 && <line x1={prompt.x} y1={prompt.y - 6} x2={prompt.x} y2={prompt.y + 6} />}</g>)}
+            {tool === "sam" && samPrompts.map((prompt, index) => { const arm = markerRadius * .5; const bar = markerRadius * .34; return <g key={index} className={`sam-prompt ${prompt.label ? "positive" : "negative"}`}><circle cx={prompt.x} cy={prompt.y} r={markerRadius} strokeWidth={markerRadius * .4} /><line x1={prompt.x - arm} y1={prompt.y} x2={prompt.x + arm} y2={prompt.y} strokeWidth={bar} />{prompt.label === 1 && <line x1={prompt.x} y1={prompt.y - arm} x2={prompt.x} y2={prompt.y + arm} strokeWidth={bar} />}</g>; })}
           </svg>
           {tool === "polygon" && polygonDraft.length > 0 && <div className="tip">{copy.polygonFinish}</div>}
+          {tool === "line" && <div className="tip">{lineDraft.length ? copy.lineFinish : copy.lineStart}</div>}
           {tool === "freehand" && <div className="tip">{freehandDrawing ? copy.freehandFinish : copy.freehandStart}</div>}
           {tool === "split" && <div className="tip">{copy.splitTip}</div>}
           {tool === "transform" && <div className="tip">{copy.transformTip}</div>}
           {tool === "reshape" && <div className="tip">{reshapeDrawing ? (reshapeStartInside ? copy.reshapeAdd : copy.reshapeDelete) : copy.reshapeStart}</div>}
-          {activeAnnotation?.type === "polygon" && tool === "select" && <div className="polygon-tip">{copy.middlePan} · nó + Delete remove em sequência · corpo + Delete apaga tudo</div>}
+          {activeAnnotation?.type === "polygon" && tool === "select" && <div className="polygon-tip">{copy.middlePan} · {copy.polygonTipDetail}</div>}
           {tool === "sam" && <div className="sam-controls"><div><button className={samPromptMode === 1 ? "active positive" : ""} onClick={() => setSamPromptMode(1)}><CirclePlus size={15} />{copy.samInclude}</button><button className={samPromptMode === 0 ? "active negative" : ""} onClick={() => setSamPromptMode(0)}><CircleMinus size={15} />{copy.samExclude}</button></div><span>{samLoading ? <><LoaderCircle className="spin" size={14} />{copy.samSegmenting}</> : `${samPrompts.length} ${copy.samPoints}`}</span><div><button disabled={!samPrompts.length && !samPreview.length && !samLoading} onClick={restartSam}><ListRestart size={14} />{copy.samRestart}</button><button className="accept" disabled={samPreview.length < 6 || samLoading} onClick={acceptSamMask}><Check size={14} />{copy.samSaveEdit}</button><button aria-label={copy.samConfigure} onClick={openSamSettings}><Settings2 size={15} /></button></div></div>}
         </div> : <div className="empty-project"><span><Images size={30} /></span><h2>{copy.emptyProjectTitle}</h2><p>{copy.emptyProjectHint}</p><div><button className="primary" onClick={() => input.current?.click()}><ImagePlus size={16} />{copy.importImages}</button><button onClick={requestOpenProject}><FolderUp size={16} />{copy.openProject}</button></div><small>{copy.privacy}</small></div>}</div></div>
-        <div className="status"><div><button onClick={() => go(-1)} disabled={!asset || assets[0]?.id === current}><ChevronLeft size={16} /></button><span><b>{asset ? assets.findIndex((item) => item.id === current) + 1 : 0}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={!asset || assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{annotationDrag ? `${copy.moving} (${annotationDrag.originals.length})` : selectionMarquee ? copy.selecting : transformDrag ? copy.transforming : reshapeDrawing ? copy.reshaping : selectedVertex ? `Nó selecionado — encaixe ${snapping ? "ativo" : "inativo"}` : polygonDraft.length ? `${polygonDraft.length / 2} ponto(s) — Delete desfaz na ordem de criação` : multiSelected.length > 1 ? `${multiSelected.length} ${copy.selectedObjects}` : currentAnnotations.length ? `${currentAnnotations.length} ${copy.imageAnnotations}` : asset ? copy.ready : copy.emptyProjectTitle}</p><button><Keyboard size={15} /> {copy.shortcuts}</button></div>
+        <div className="status"><div><button onClick={() => go(-1)} disabled={!asset || assets[0]?.id === current}><ChevronLeft size={16} /></button><span><b>{asset ? assets.findIndex((item) => item.id === current) + 1 : 0}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={!asset || assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{annotationDrag ? `${copy.moving} (${annotationDrag.originals.length})` : selectionMarquee ? copy.selecting : transformDrag ? copy.transforming : reshapeDrawing ? copy.reshaping : selectedVertex ? fill(copy.statusVertexSelected, { status: snapping ? copy.snapStateOn : copy.snapStateOff }) : polygonDraft.length || lineDraft.length ? fill(copy.statusDraftPoints, { n: (polygonDraft.length + lineDraft.length) / 2 }) : multiSelected.length > 1 ? `${multiSelected.length} ${copy.selectedObjects}` : currentAnnotations.length ? `${currentAnnotations.length} ${copy.imageAnnotations}` : asset ? copy.ready : copy.emptyProjectTitle}</p><button><Keyboard size={15} /> {copy.shortcuts}</button></div>
       </section>
 
       <aside className={`labels ${rightOpen ? "open" : ""}`}>
         <div className="drawer-head"><b>{copy.annotations} · {copy.quality}</b><button onClick={() => setRightOpen(false)}><X size={19} /></button></div>
         <div className="tabs"><button className={!quality ? "active" : ""} onClick={() => setQuality(false)}>{copy.annotations}</button><button className={quality ? "active" : ""} onClick={() => setQuality(true)}>{copy.quality} <b>{currentAnnotations.length ? 1 : 0}</b></button></div>
-        {!quality ? <div className="annotation-editor"><section className="annotation-panel-head"><div><b>{copy.annotations} · {currentAnnotations.length}</b><span>{copy.annotationPanelHint}</span></div><div className="annotation-panel-actions"><button disabled={!currentPolygonIds.length} onClick={toggleAllCurrentPolygons}><Check size={13} />{allCurrentPolygonsSelected ? copy.clearPolygonSelection : copy.selectAllPolygons}</button><button onClick={() => { setSelectedClassIds([]); setClassManagerOpen(true); }}><Palette size={14} />{copy.manageClasses}</button></div></section>
+        {!quality ? <div className="annotation-editor"><section className="annotation-panel-head"><div><b>{copy.annotations} · {currentAnnotations.length}</b><span>{copy.annotationPanelHint}</span></div><div className="annotation-panel-actions"><button disabled={!currentPolygonIds.length} onClick={toggleAllCurrentPolygons}><Check size={13} />{allCurrentPolygonsSelected ? copy.clearPolygonSelection : copy.selectAllPolygons}</button><button onClick={() => { setSelectedClassIds([]); setNewLabelColor(nextLabelColor(labels)); setClassManagerOpen(true); }}><Palette size={14} />{copy.manageClasses}</button></div></section>
           {selectedIds.length > 0 && <section className="batch-class"><div><Tags size={14} /><span><b>{selectedIds.length} {copy.batchSelection}</b><small>{copy.changeClass}</small></span></div><div><select aria-label={copy.changeClass} value={resolvedBatchLabel} onChange={(event) => setBatchLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.id === UNLABELED_ID ? copy.unlabeled : label.name}</option>)}</select><button onClick={reclassifySelection}>{copy.applyClass}</button><button className="batch-delete" onClick={() => setPendingDeleteAnnotationIds(selectedIds)}><Trash2 size={13} />{copy.deleteSelectedAnnotations}</button></div></section>}
-          <div className="instances">{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); const isChecked = multiSelected.includes(annotation.id); return <div key={annotation.id} className={`instance-row ${isChecked ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className={`annotation-selector ${isChecked ? "selected" : ""}`} aria-label={`${copy.selectAnnotation}: ${annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} #${index + 1}`} aria-pressed={isChecked} onClick={() => { toggleMultiSelection(annotation.id); setTool("select"); }}>{isChecked && <Check size={11} />}</button><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); setBatchLabel(annotation.label); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : ""}</i><span>{annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
+          <div className="instances">{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); const isChecked = multiSelected.includes(annotation.id); return <div key={annotation.id} className={`instance-row ${isChecked ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className={`annotation-selector ${isChecked ? "selected" : ""}`} aria-label={`${copy.selectAnnotation}: ${annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} #${index + 1}`} aria-pressed={isChecked} onClick={() => { toggleMultiSelection(annotation.id); setTool("select"); }}>{isChecked && <Check size={11} />}</button><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); setBatchLabel(annotation.label); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : annotation.type === "line" ? "╱" : ""}</i><span>{annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
         </div> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>{copy.goodConsistency}</span></div><article className="warn"><b>!</b><div><strong>{copy.possibleOverlap}</strong><p>{copy.overlapText}</p></div></article><article><b>✓</b><div><strong>{copy.validClasses}</strong><p>{copy.validClassesText}</p></div></article><article><b>✓</b><div><strong>{copy.noEmpty}</strong><p>{copy.noEmptyText}</p></div></article><button onClick={() => { setQuality(false); setSelected(visibleAnnotations[0]?.id ?? null); setMultiSelected(visibleAnnotations[0] ? [visibleAnnotations[0].id] : []); }}>{copy.review}</button></div>}
         <div className="hint"><b>{activeAnnotation?.type === "polygon" ? copy.vectorEditing : copy.quickTip}</b><p>{activeAnnotation?.type === "polygon" ? copy.vectorHint : copy.shortcutHint}</p></div>
       </aside>
@@ -1143,9 +1309,9 @@ export default function Home() {
     {projectSaveOpen && <div className="modal-backdrop"><section className="sam-modal project-save-modal" role="dialog" aria-modal="true" aria-labelledby="project-save-title"><header><div><span><Save size={18} /></span><div><h2 id="project-save-title">{copy.saveProjectTitle}</h2><p>{copy.saveProjectDescription}</p></div></div><button onClick={() => setProjectSaveOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="project-save-options" role="radiogroup" aria-label={copy.saveProjectTitle}><button className={projectSaveMode === "annotations" ? "active" : ""} role="radio" aria-checked={projectSaveMode === "annotations"} onClick={() => setProjectSaveMode("annotations")}><span><FileText size={20} /></span><div><b>{copy.annotationsOnly}</b><p>{copy.annotationsOnlyHint}</p><small>{formatBytes(annotationProjectBytes)} · {assets.length} {copy.imageReferences}</small></div><Check size={16} /></button><button className={projectSaveMode === "complete" ? "active" : ""} role="radio" aria-checked={projectSaveMode === "complete"} disabled={missingProjectImages > 0} onClick={() => setProjectSaveMode("complete")}><span><Images size={20} /></span><div><b>{copy.imagesAndAnnotations}</b><p>{copy.imagesAndAnnotationsHint}</p><small>{knownProjectImageBytes ? `${formatBytes(knownProjectImageBytes)} + ${formatBytes(annotationProjectBytes)}` : copy.sizeCalculatedOnSave}</small>{missingProjectImages > 0 && <em>{missingProjectImages} {copy.projectImagesNeedReload}</em>}</div><Check size={16} /></button></div><div className="project-save-privacy"><ShieldCheck size={16} /><div><b>{copy.localOnly}</b><p>{copy.projectSavePrivacy}</p></div></div><footer><button onClick={() => setProjectSaveOpen(false)}>{copy.cancel}</button><button className="connect" disabled={projectBusy || (projectSaveMode === "complete" && missingProjectImages > 0)} onClick={() => void savePortableProject(projectSaveMode)}>{projectBusy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}{copy.generateProjectFile}</button></footer></section></div>}
     {pendingDeleteAnnotations.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-annotations-title" aria-describedby="delete-annotations-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-annotations-title">{copy.confirmDeleteAnnotations}</h2><p>{pendingDeleteAnnotations.length} {copy.annotationsToDelete}</p></div></div><button onClick={() => setPendingDeleteAnnotationIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-annotations-description" className="delete-class-warning">{copy.deleteAnnotationsWarning}</p><div className="delete-class-impact"><span>{copy.annotationsToDelete}</span><b>{pendingDeleteAnnotations.length}</b></div><footer><button onClick={() => setPendingDeleteAnnotationIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingAnnotations}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
     {pendingDeleteClasses.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-class-title" aria-describedby="delete-class-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-class-title">{pendingDeleteClasses.length === 1 ? copy.confirmDeleteClass : copy.confirmDeleteClasses}</h2><p>{pendingDeleteClasses.map((label) => label.name).join(", ")}</p></div></div><button onClick={() => setPendingDeleteClassIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-class-description" className="delete-class-warning">{copy.deleteClassWarning} <strong>{copy.unlabeled}</strong>.</p><div className="delete-class-impact"><span>{copy.affectedAnnotations}</span><b>{pendingAffectedAnnotations}</b></div><footer><button onClick={() => setPendingDeleteClassIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingClasses}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
-    {preferencesOpen && <div className="modal-backdrop"><section className="sam-modal preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title"><header><div><span><Settings2 size={18} /></span><div><h2 id="preferences-title">{copy.preferences}</h2><p>VisionLabel</p></div></div><button onClick={() => setPreferencesOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="preferences-tabs"><button className={preferencesTab === "appearance" ? "active" : ""} onClick={() => setPreferencesTab("appearance")}><Sun size={14} />{copy.appearance}</button><button className={preferencesTab === "language" ? "active" : ""} onClick={() => setPreferencesTab("language")}><Languages size={14} />{copy.language}</button></div>{preferencesTab === "appearance" ? <div className="preference-options"><button className={themeMode === "system" ? "active" : ""} onClick={() => setThemeMode("system")}><Monitor size={20} /><b>{copy.system}</b></button><button className={themeMode === "light" ? "active" : ""} onClick={() => setThemeMode("light")}><Sun size={20} /><b>{copy.light}</b></button><button className={themeMode === "dark" ? "active" : ""} onClick={() => setThemeMode("dark")}><Moon size={20} /><b>{copy.dark}</b></button></div> : <div className="language-options"><button className={language === "pt" ? "active" : ""} onClick={() => setLanguage("pt")}><b>Português</b><span>PT-BR</span></button><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}><b>English</b><span>EN</span></button><button className={language === "fr" ? "active" : ""} onClick={() => setLanguage("fr")}><b>Français</b><span>FR</span></button><button className={language === "es" ? "active" : ""} onClick={() => setLanguage("es")}><b>Español</b><span>ES</span></button></div>}<footer><button className="connect" onClick={() => setPreferencesOpen(false)}><Check size={15} /> {copy.close}</button></footer></section></div>}
-    {samOpen && <div className="modal-backdrop"><section className="sam-modal sam-local-modal" role="dialog" aria-modal="true" aria-labelledby="sam-title"><header><div><span><WandSparkles size={18} /></span><div><h2 id="sam-title">{copy.samTitle}</h2><p>{copy.samSubtitle}</p></div></div><button onClick={() => setSamOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="hardware-warning"><b>{copy.beforeRun}</b><p><strong>Recomendado — ViT-B:</strong> GPU NVIDIA com 6 GB de VRAM (8 GB ideal) ou CPU com 4+ núcleos e 16 GB de RAM. Em CPU funciona, mas o primeiro ponto em cada imagem pode levar dezenas de segundos.</p><p>O instalador usa o ViT-B oficial, detecta CUDA ou Apple Silicon automaticamente e reaproveita a imagem já processada nos próximos cliques.</p></div><div className="sam-oneclick"><b>{copy.oneClickSetup}</b><p>{copy.oneClickHint}</p><div><a className="primary" href="/visionlabel-sam-windows.bat" download><Download size={15} /><span><strong>{copy.windowsInstaller}</strong><small>Windows 10/11</small></span></a><a href="/visionlabel-sam-macos-linux.sh" download><Download size={15} /><span><strong>{copy.unixInstaller}</strong><small>macOS · Linux</small></span></a></div><small>{copy.autoDownloadModel}</small></div><div className="sam-relaunch"><div><b>{copy.installedAlready}</b><p>{copy.restartServerHint}</p></div><div><a className="windows" href="/visionlabel-sam-start-windows.bat" download><Power size={14} />{copy.restartWindows}</a><a href="/visionlabel-sam-start-macos-linux.sh" download><Power size={14} />{copy.restartUnix}</a></div></div><div className={`sam-status ${samConnectionState}`}><span /> <b>{samConnectionState === "ready" ? copy.samReady : samConnectionState === "loading" ? copy.samLoadingModel : samConnectionState === "checking" ? copy.samChecking : copy.samOffline}</b>{samRuntime && <small>{samRuntime}</small>}</div><details className="sam-advanced"><summary>{copy.advancedSetup}</summary><div className="sam-setup"><b>{copy.manualSetup}</b><ol><li><a href="https://github.com/facebookresearch/segment-anything#model-checkpoints" target="_blank" rel="noreferrer"><Download size={13} /> {copy.checkpointPage}</a></li><li><a href="/visionlabel-sam-local.py" download><Download size={13} /> {copy.connectorDownload}</a></li><li>Instale as dependências e execute o conector apontando para o <code>.pth</code>.</li></ol><pre>python visionlabel-sam-local.py --checkpoint sam_vit_b_01ec64.pth</pre></div><label>{copy.localAddress}<input type="url" placeholder="http://127.0.0.1:7860/predict" value={samEndpointDraft} onChange={(event) => setSamEndpointDraft(event.target.value)} /></label></details><div className="sam-contract"><b>{copy.noUpload}</b><p>O Site conversa apenas com o conector em <code>localhost</code>. Seu navegador poderá pedir permissão para acessar a rede local. Nenhum token é usado ou armazenado.</p></div><footer><button onClick={() => setSamOpen(false)}>{copy.cancel}</button><button className="connect" disabled={samConnectionState === "checking"} onClick={() => void connectSam()}>{samConnectionState === "checking" ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} {copy.verifyUse}</button></footer></section></div>}
-    {(leftOpen || rightOpen) && <button className="backdrop" onClick={() => { setLeftOpen(false); setRightOpen(false); }} aria-label="Fechar painel" />}
+    {preferencesOpen && <div className="modal-backdrop"><section className="sam-modal preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title"><header><div><span><Settings2 size={18} /></span><div><h2 id="preferences-title">{copy.preferences}</h2><p>Epiaka</p></div></div><button onClick={() => setPreferencesOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="preferences-tabs"><button className={preferencesTab === "appearance" ? "active" : ""} onClick={() => setPreferencesTab("appearance")}><Sun size={14} />{copy.appearance}</button><button className={preferencesTab === "language" ? "active" : ""} onClick={() => setPreferencesTab("language")}><Languages size={14} />{copy.language}</button></div>{preferencesTab === "appearance" ? <div className="preference-options"><button className={themeMode === "system" ? "active" : ""} onClick={() => setThemeMode("system")}><Monitor size={20} /><b>{copy.system}</b></button><button className={themeMode === "light" ? "active" : ""} onClick={() => setThemeMode("light")}><Sun size={20} /><b>{copy.light}</b></button><button className={themeMode === "dark" ? "active" : ""} onClick={() => setThemeMode("dark")}><Moon size={20} /><b>{copy.dark}</b></button></div> : <div className="language-options"><button className={language === "pt" ? "active" : ""} onClick={() => setLanguage("pt")}><b>Português</b><span>PT-BR</span></button><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}><b>English</b><span>EN</span></button><button className={language === "fr" ? "active" : ""} onClick={() => setLanguage("fr")}><b>Français</b><span>FR</span></button><button className={language === "es" ? "active" : ""} onClick={() => setLanguage("es")}><b>Español</b><span>ES</span></button></div>}<footer><button className="connect" onClick={() => setPreferencesOpen(false)}><Check size={15} /> {copy.close}</button></footer></section></div>}
+    {samOpen && <div className="modal-backdrop"><section className="sam-modal sam-local-modal" role="dialog" aria-modal="true" aria-labelledby="sam-title"><header><div><span><WandSparkles size={18} /></span><div><h2 id="sam-title">{copy.samTitle}</h2><p>{copy.samSubtitle}</p></div></div><button onClick={() => setSamOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="hardware-warning"><b>{copy.beforeRun}</b><p><strong>{copy.samHardwareRecommended}</strong> {copy.samHardwareDetail}</p><p>{copy.samInstallerDetail}</p></div><div className="sam-oneclick"><b>{copy.oneClickSetup}</b><p>{copy.oneClickHint}</p><div><a className="primary" href="/epiaka-sam-windows.bat" download><Download size={15} /><span><strong>{copy.windowsInstaller}</strong><small>Windows 10/11</small></span></a><a href="/epiaka-sam-macos-linux.sh" download><Download size={15} /><span><strong>{copy.unixInstaller}</strong><small>macOS · Linux</small></span></a></div><small>{copy.autoDownloadModel}</small></div><div className="sam-relaunch"><div><b>{copy.installedAlready}</b><p>{copy.restartServerHint}</p></div><div><a className="windows" href="/epiaka-sam-start-windows.bat" download><Power size={14} />{copy.restartWindows}</a><a href="/epiaka-sam-start-macos-linux.sh" download><Power size={14} />{copy.restartUnix}</a></div></div><div className={`sam-status ${samConnectionState}`}><span /> <b>{samConnectionState === "ready" ? copy.samReady : samConnectionState === "loading" ? copy.samLoadingModel : samConnectionState === "checking" ? copy.samChecking : copy.samOffline}</b>{samRuntime && <small>{samRuntime}</small>}</div><details className="sam-advanced"><summary>{copy.advancedSetup}</summary><div className="sam-setup"><b>{copy.manualSetup}</b><ol><li><a href="https://github.com/facebookresearch/segment-anything#model-checkpoints" target="_blank" rel="noreferrer"><Download size={13} /> {copy.checkpointPage}</a></li><li><a href="/epiaka-sam-local.py" download><Download size={13} /> {copy.connectorDownload}</a></li><li>{copy.samManualStep} <code>.pth</code>.</li></ol><pre>python epiaka-sam-local.py --checkpoint sam_vit_b_01ec64.pth</pre></div><label>{copy.localAddress}<input type="url" placeholder="http://127.0.0.1:7860/predict" value={samEndpointDraft} onChange={(event) => setSamEndpointDraft(event.target.value)} /></label></details><div className="sam-contract"><b>{copy.noUpload}</b><p>{copy.samPrivacyIntro} <code>localhost</code>{copy.samPrivacyDetail}</p></div><footer><button onClick={() => setSamOpen(false)}>{copy.cancel}</button><button className="connect" disabled={samConnectionState === "checking"} onClick={() => void connectSam()}>{samConnectionState === "checking" ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} {copy.verifyUse}</button></footer></section></div>}
+    {(leftOpen || rightOpen) && <button className="backdrop" onClick={() => { setLeftOpen(false); setRightOpen(false); }} aria-label={copy.closePanel} />}
     {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
   </main>;
 }

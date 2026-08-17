@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-APP_DIR="${HOME}/.visionlabel-sam"
+APP_DIR="${HOME}/.epiaka-sam"
 PYTHON="${APP_DIR}/venv/bin/python"
-CONNECTOR="${APP_DIR}/visionlabel-sam-local.py"
+CONNECTOR="${APP_DIR}/epiaka-sam-local.py"
 CHECKPOINT="${APP_DIR}/sam_vit_b_01ec64.pth"
 SITE_URL="https://visionlabel-anotador.eduardo1089.chatgpt.site"
 
@@ -16,12 +16,12 @@ open_site() {
 }
 
 printf '\n==========================================\n'
-printf ' VisionLabel SAM - iniciar novamente\n'
+printf ' Epiaka SAM - iniciar novamente\n'
 printf '==========================================\n\n'
 
 if [[ ! -x "${PYTHON}" || ! -f "${CONNECTOR}" || ! -f "${CHECKPOINT}" ]]; then
   printf 'A instalacao completa do SAM nao foi encontrada.\n'
-  printf 'Abra o VisionLabel e use primeiro o instalador para macOS/Linux.\n'
+  printf 'Abra o Epiaka e use primeiro o instalador para macOS/Linux.\n'
   open_site
   exit 1
 fi

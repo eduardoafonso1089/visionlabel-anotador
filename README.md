@@ -21,12 +21,12 @@ Scripts that need writable project-scoped home, npm, XDG, and temporary paths us
 
 ## SAM local
 
-O VisionLabel usa um conector FastAPI executado no computador do usuário; imagens e prompts não são enviados para o Site. A tela **Ativar SAM local** oferece dois instaladores autocontidos:
+O Epiaka usa um conector FastAPI executado no computador do usuário; imagens e prompts não são enviados para o Site. A tela **Ativar SAM local** oferece dois instaladores autocontidos:
 
-- `public/visionlabel-sam-windows.bat`: prepara Python quando necessário, cria um ambiente isolado, instala as dependências, baixa o checkpoint ViT-B oficial e inicia o conector;
-- `public/visionlabel-sam-macos-linux.sh`: faz a mesma preparação usando o Python 3 já instalado no sistema.
+- `public/epiaka-sam-windows.bat`: prepara Python quando necessário, cria um ambiente isolado, instala as dependências, baixa o checkpoint ViT-B oficial e inicia o conector;
+- `public/epiaka-sam-macos-linux.sh`: faz a mesma preparação usando o Python 3 já instalado no sistema.
 
-O conector fica em `http://127.0.0.1:7860`, detecta CUDA, Apple Silicon/MPS ou CPU automaticamente e mantém em cache o embedding da imagem atual para acelerar prompts adicionais. A alternativa manual continua disponível em `public/visionlabel-sam-local.py`.
+O conector fica em `http://127.0.0.1:7860`, detecta CUDA, Apple Silicon/MPS ou CPU automaticamente e mantém em cache o embedding da imagem atual para acelerar prompts adicionais. A alternativa manual continua disponível em `public/epiaka-sam-local.py`.
 
 ## Included Shape
 

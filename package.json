@@ -1,5 +1,5 @@
 {
-  "name": "visionlabel-anotador",
+  "name": "epiaka",
   "version": "0.1.0",
   "private": true,
   "engines": {
@@ -45,5 +45,5 @@
     "wrangler": "4.92.0"
   },
   "type": "module",
-  "displayName": "VisionLabel — Anotação de Imagens"
+  "displayName": "Epiaka — Anotação de Imagens"
 }

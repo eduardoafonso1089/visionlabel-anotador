@@ -1,23 +1,25 @@
 import { contours } from "d3-contour";
+import { fill } from "./i18n";
 import { EDITOR_HEIGHT, EDITOR_WIDTH, polygonArea } from "./geometry";
+import type { Copy } from "./i18n";
 import type { Asset, SamPrompt } from "./types";
 
 type SamResponse = Record<string, unknown>;
 
-function readDataUrl(blob: Blob) {
+function readDataUrl(blob: Blob, copy: Copy) {
   return new Promise<string>((resolve, reject) => {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result));
-    reader.onerror = () => reject(new Error("Não foi possível ler a imagem."));
+    reader.onerror = () => reject(new Error(copy.errSamReadImage));
     reader.readAsDataURL(blob);
   });
 }
 
-async function assetAsDataUrl(asset: Asset) {
+async function assetAsDataUrl(asset: Asset, copy: Copy) {
   if (asset.src.startsWith("data:")) return asset.src;
   const response = await fetch(asset.src);
-  if (!response.ok) throw new Error("Não foi possível preparar esta imagem para o SAM.");
-  return readDataUrl(await response.blob());
+  if (!response.ok) throw new Error(copy.errSamPrepareImage);
+  return readDataUrl(await response.blob(), copy);
 }
 
 function flattenPolygon(value: unknown): number[] | null {
@@ -74,7 +76,7 @@ function normalizePolygon(points: number[], width: number, height: number) {
   })).map((coordinate, index) => Math.max(0, Math.min(index % 2 ? EDITOR_HEIGHT : EDITOR_WIDTH, coordinate)));
 }
 
-function parseResponse(body: SamResponse, width: number, height: number) {
+function parseResponse(body: SamResponse, width: number, height: number, copy: Copy) {
   const data = (body.data && typeof body.data === "object" ? body.data : body) as SamResponse;
   const masks = data.masks as unknown[] | undefined;
   const candidates = [data.polygon, data.polygons, data.contour, data.contours, masks?.[0]];
@@ -92,13 +94,13 @@ function parseResponse(body: SamResponse, width: number, height: number) {
     const polygon = matrixToPolygon(maskCandidate as unknown[][]);
     if (polygon) return normalizePolygon(polygon, (maskCandidate[0] as unknown[]).length, maskCandidate.length);
   }
-  throw new Error("O SAM respondeu, mas não retornou polygon, polygons ou uma máscara 2D.");
+  throw new Error(copy.errSamNoPolygon);
 }
 
-export async function requestSamMask({ endpoint, asset, prompts }: { endpoint: string; asset: Asset; prompts: SamPrompt[] }) {
+export async function requestSamMask({ endpoint, asset, prompts, copy }: { endpoint: string; asset: Asset; prompts: SamPrompt[]; copy: Copy }) {
   const width = asset.width ?? 1000;
   const height = asset.height ?? 650;
-  const image = await assetAsDataUrl(asset);
+  const image = await assetAsDataUrl(asset, copy);
   const pointCoords = prompts.map((prompt) => [prompt.x / EDITOR_WIDTH * width, prompt.y / EDITOR_HEIGHT * height]);
   const pointLabels = prompts.map((prompt) => prompt.label);
   const controller = new AbortController();
@@ -117,14 +119,14 @@ export async function requestSamMask({ endpoint, asset, prompts }: { endpoint: s
       }),
       signal: controller.signal,
     });
-    if (!response.ok) throw new Error(`O endpoint SAM respondeu com HTTP ${response.status}.`);
-    return parseResponse(await response.json() as SamResponse, width, height);
+    if (!response.ok) throw new Error(fill(copy.errSamHttp, { status: response.status }));
+    return parseResponse(await response.json() as SamResponse, width, height, copy);
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
-      throw new Error("O SAM local demorou mais de 3 minutos para responder.");
+      throw new Error(copy.errSamTimeout);
     }
     if (error instanceof TypeError) {
-      throw new Error("Não foi possível acessar o SAM local. Verifique se o conector está aberto e autorize o acesso à rede local.");
+      throw new Error(copy.errSamUnreachable);
     }
     throw error;
   } finally {

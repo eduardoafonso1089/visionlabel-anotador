@@ -1,17 +1,17 @@
 @echo off
 chcp 65001 >nul
 setlocal EnableExtensions
-title VisionLabel SAM local - iniciar servidor
+title Epiaka SAM local - iniciar servidor
 
-set "APP_DIR=%LOCALAPPDATA%\VisionLabelSAM"
+set "APP_DIR=%LOCALAPPDATA%\EpiakaSAM"
 set "PYTHON=%APP_DIR%\venv\Scripts\python.exe"
-set "CONNECTOR=%APP_DIR%\visionlabel-sam-local.py"
+set "CONNECTOR=%APP_DIR%\epiaka-sam-local.py"
 set "CHECKPOINT=%APP_DIR%\sam_vit_b_01ec64.pth"
 set "SITE_URL=https://visionlabel-anotador.eduardo1089.chatgpt.site"
 
 echo.
 echo ==========================================
-echo   VisionLabel SAM - iniciar novamente
+echo   Epiaka SAM - iniciar novamente
 echo ==========================================
 echo.
 
@@ -37,7 +37,7 @@ exit /b 0
 
 :not_installed
 echo A instalacao completa do SAM nao foi encontrada neste computador.
-echo Abra o VisionLabel e use primeiro o botao "Instalar no Windows".
+echo Abra o Epiaka e use primeiro o botao "Instalar no Windows".
 start "" "%SITE_URL%"
 pause
 exit /b 1

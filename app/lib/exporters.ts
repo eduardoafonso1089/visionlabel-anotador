@@ -47,9 +47,14 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
     );
     const segmentation =
       annotation.type === "polygon" ? [scalePoints(annotation.pts ?? [], width, height)] : [];
+    // Uma polilinha não delimita região: sai em `line` (extensão), com area 0 e segmentation
+    // vazia, para nenhum consumidor a interpretar como máscara.
+    const line = annotation.type === "line" ? scalePoints(annotation.pts ?? [], width, height) : [];
     const area = annotation.type === "polygon"
       ? polygonArea(scalePoints(annotation.pts ?? [], width, height))
-      : (scaledBounds[2] - scaledBounds[0]) * (scaledBounds[3] - scaledBounds[1]);
+      : annotation.type === "line"
+        ? 0
+        : (scaledBounds[2] - scaledBounds[0]) * (scaledBounds[3] - scaledBounds[1]);
     return {
       id: index + 1,
       image_id: imageIndex + 1,
@@ -61,6 +66,7 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
         scaledBounds[3] - scaledBounds[1],
       ],
       segmentation,
+      line,
       keypoints:
         annotation.type === "point"
           ? scalePoints([annotation.x ?? 0, annotation.y ?? 0], width, height).concat(2)
@@ -71,15 +77,15 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
     };
   });
   downloadBlob(
-    "visionlabel-coco.json",
+    "epiaka-coco.json",
     new Blob(
-      [JSON.stringify({ info: { description: "VisionLabel dataset", version: "1.0" }, images, categories, annotations: cocoAnnotations }, null, 2)],
+      [JSON.stringify({ info: { description: "Epiaka dataset", version: "1.0" }, images, categories, annotations: cocoAnnotations }, null, 2)],
       { type: "application/json;charset=utf-8" },
     ),
   );
 }
 
-export async function exportYoloZip(assets: Asset[], labels: Label[], annotations: Annotation[]) {
+export async function exportYoloZip(assets: Asset[], labels: Label[], annotations: Annotation[], readme: string) {
   const zip = new JSZip();
   const labelFolder = zip.folder("labels");
   assets.forEach((asset, imageIndex) => {
@@ -109,7 +115,7 @@ export async function exportYoloZip(assets: Asset[], labels: Label[], annotation
   );
   zip.file(
     "README.txt",
-    "Exportação VisionLabel para YOLO. Caixas usam o formato de detecção e polígonos usam o formato de segmentação. Pontos-chave permanecem disponíveis na exportação COCO.\n",
+    `${readme}\n`,
   );
-  downloadBlob("visionlabel-yolo.zip", await zip.generateAsync({ type: "blob" }));
+  downloadBlob("epiaka-yolo.zip", await zip.generateAsync({ type: "blob" }));
 }
