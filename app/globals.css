@@ -207,3 +207,43 @@ body:has(.landing){overflow:auto}
   .landing-hero{padding:38px 0 30px}
   .landing-langs{width:100%;justify-content:center;border-radius:12px}
 }
+
+/* ================= Protótipo COG (rota /cog, isolada) ================= */
+.cog{height:100vh;display:flex;flex-direction:column;background:var(--paper);color:var(--ink);overflow:hidden}
+.cog>header{padding:14px 18px;border-bottom:1px solid var(--line);background:var(--surface);flex:none}
+.cog h1{margin:0;font-size:16px;font-weight:700;letter-spacing:-.2px}
+.cog>header>p{margin:5px 0 0;font-size:12px;color:var(--muted)}
+.cog-actions{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-top:11px}
+.cog-actions button,.cog-file>span{height:32px;padding:0 13px;border:1px solid var(--line);border-radius:8px;
+  background:var(--control-bg);color:var(--ink);font-size:12px;font-weight:700;cursor:pointer;
+  display:inline-flex;align-items:center;font-family:inherit}
+.cog-actions button:hover:not(:disabled),.cog-file:hover>span{background:var(--theme-hover)}
+.cog-actions button:disabled{opacity:.5;cursor:wait}
+.cog-file>input{position:absolute;width:1px;height:1px;opacity:0}
+.cog-modes{display:flex;gap:5px;margin-left:auto}
+.cog-modes button.on{background:var(--tool-active-bg);color:var(--tool-active-ink);border-color:var(--tool-active-border)}
+
+.cog-body{flex:1;min-height:0;display:grid;grid-template-columns:minmax(0,1fr) 280px}
+.cog-map{min-width:0;background:var(--canvas-bg)}
+.cog-map canvas{display:block}
+.cog-hud{border-left:1px solid var(--line);background:var(--surface);padding:15px;overflow:auto}
+.cog-hud h2{margin:0 0 8px;font-family:var(--mono),monospace;font-size:10px;letter-spacing:.15em;
+  text-transform:uppercase;color:var(--tool-hint-ink);font-weight:700}
+.cog-hud h2+*{margin-bottom:18px}
+.cog-hud dl{display:grid;grid-template-columns:auto minmax(0,1fr);gap:5px 10px;margin:0;font-size:11.5px}
+.cog-hud dt{color:var(--muted);white-space:nowrap}
+.cog-hud dd{margin:0;font-family:var(--mono),monospace;text-align:right;overflow-wrap:anywhere}
+.cog-bad{color:var(--danger)}
+.cog-empty{margin:0;font-size:11.5px;color:var(--tool-hint-ink)}
+.cog-note{margin:0;font-size:10.5px;line-height:1.55;color:var(--tool-hint-ink);
+  border-top:1px solid var(--line);padding-top:10px}
+
+/* Controles do OpenLayers no visual do app, sem depender do ol.css */
+.cog .ol-viewport{background:var(--canvas-bg)}
+.cog .ol-zoom{position:absolute;top:10px;left:10px;display:flex;flex-direction:column;gap:3px}
+.cog .ol-zoom button{width:28px;height:28px;border:1px solid var(--line);border-radius:7px;
+  background:var(--surface);color:var(--ink);font-size:15px;font-weight:700;cursor:pointer;line-height:1}
+.cog .ol-attribution{position:absolute;right:6px;bottom:4px;font-size:9.5px;color:var(--tool-hint-ink)}
+.cog .ol-attribution ul{margin:0;padding:0;list-style:none;display:flex;gap:7px}
+.cog .ol-attribution button{display:none}
+@media(max-width:860px){.cog-body{grid-template-columns:minmax(0,1fr)}.cog-hud{display:none}}
