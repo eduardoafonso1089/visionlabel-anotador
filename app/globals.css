@@ -136,3 +136,74 @@ html[data-theme="light"]{--ink:#111614;--muted:#55635C;--line:#D5DED8;--green:#1
 .brand-lockup{display:flex;align-items:center;gap:6px;color:var(--ink);flex:none}
 .brand-lockup svg{display:block;overflow:visible}
 .loading-card{gap:0}
+
+/* ================= Landing page ================= */
+/* O corpo do app usa overflow:hidden porque o editor gerencia o próprio scroll;
+   a landing precisa rolar, então libera na própria página. */
+.landing{min-height:100vh;background:var(--paper);color:var(--ink);overflow-y:auto;
+  display:flex;flex-direction:column;align-items:center;padding:0 22px 0}
+body:has(.landing){overflow:auto}
+
+.landing>*{width:100%;max-width:940px}
+
+.landing-top{display:flex;align-items:center;justify-content:space-between;gap:18px;
+  flex-wrap:wrap;padding:20px 0 8px}
+.landing-langs{display:flex;align-items:center;gap:3px;color:var(--muted);
+  border:1px solid var(--line);border-radius:999px;padding:4px 10px 4px 11px;background:var(--surface)}
+.landing-langs button{border:0;border-radius:999px;background:transparent;color:var(--muted);
+  padding:4px 9px;font-size:11px;font-weight:700;cursor:pointer;font-family:inherit;white-space:nowrap}
+.landing-langs button:hover{color:var(--ink);background:var(--theme-hover)}
+.landing-langs button.active{background:var(--tool-active-bg);color:var(--tool-active-ink)}
+
+/* Grade pontilhada do herói: mesma linguagem do canvas de anotação. */
+.landing-hero{padding:58px 0 44px;display:flex;flex-direction:column;gap:18px;
+  background:radial-gradient(var(--dot) 1px,transparent 1px) 0 0/22px 22px;
+  background-clip:content-box}
+.landing-eyebrow{margin:0;display:flex;align-items:center;gap:8px;color:var(--green);
+  font-size:11px;font-weight:700;letter-spacing:.14em;text-transform:uppercase}
+.landing-hero h1{margin:0;font-size:clamp(34px,6vw,60px);line-height:1.04;letter-spacing:-1.4px;
+  font-weight:700;text-wrap:balance}
+.landing-intro{margin:0;max-width:60ch;font-size:16px;line-height:1.62;color:var(--muted)}
+.landing-actions{display:flex;align-items:center;gap:13px;flex-wrap:wrap;margin-top:6px}
+.landing-cta{height:46px;padding:0 24px;border-radius:11px;background:var(--green);
+  color:var(--on-brand);display:inline-flex;align-items:center;font-size:15px;font-weight:700;
+  text-decoration:none;white-space:nowrap}
+.landing-cta:hover{filter:brightness(1.08)}
+.landing-free-badge{display:inline-flex;align-items:center;gap:6px;height:30px;padding:0 12px;
+  border-radius:999px;border:1px solid color-mix(in srgb,var(--green) 45%,var(--line));
+  background:var(--tool-active-bg);color:var(--tool-active-ink);font-size:12px;font-weight:700}
+.landing-cta-note{margin:0;font-size:12.5px;color:var(--tool-hint-ink)}
+
+.landing-claims{display:grid;gap:15px;grid-template-columns:repeat(auto-fit,minmax(min(100%,340px),1fr));
+  padding:12px 0 30px}
+.landing-claims article{display:flex;gap:14px;padding:20px;border:1px solid var(--line);
+  border-radius:14px;background:var(--surface)}
+.landing-claim-mark{width:36px;height:36px;flex:none;border-radius:10px;display:grid;place-items:center;
+  background:var(--tool-active-bg);color:var(--tool-active-ink)}
+.landing-claims h2{margin:0 0 6px;font-size:15px;font-weight:700;letter-spacing:-.2px}
+.landing-claims p{margin:0;font-size:13px;line-height:1.6;color:var(--muted)}
+
+.landing-features{padding:26px 0 12px;display:flex;flex-direction:column;gap:20px;
+  border-top:1px solid var(--line)}
+.landing-grid{display:grid;gap:15px;grid-template-columns:repeat(auto-fit,minmax(min(100%,270px),1fr))}
+.landing-grid article{padding:20px;border:1px solid var(--line);border-radius:14px;
+  background:var(--surface);display:flex;flex-direction:column;gap:9px}
+.landing-grid article>span{width:36px;height:36px;border-radius:10px;display:grid;place-items:center;
+  background:var(--control-bg);color:var(--green);border:1px solid var(--line)}
+.landing-grid h3{margin:0;font-size:14.5px;font-weight:700;letter-spacing:-.2px}
+.landing-grid p{margin:0;font-size:12.5px;line-height:1.62;color:var(--muted)}
+
+.landing-closing{margin:34px 0 0;padding:38px 24px;border:1px solid var(--line);border-radius:18px;
+  background:var(--surface-soft);display:flex;flex-direction:column;align-items:center;gap:16px;
+  text-align:center}
+.landing-closing p{margin:0;font-size:12.5px;color:var(--tool-hint-ink)}
+
+.landing-foot{display:flex;align-items:center;gap:13px;flex-wrap:wrap;justify-content:center;
+  padding:30px 0 40px;margin-top:14px;border-top:1px solid var(--line)}
+.landing-foot p{margin:0;font-size:12px;color:var(--tool-hint-ink)}
+
+@media(max-width:560px){
+  .landing{padding:0 15px}
+  .landing-hero{padding:38px 0 30px}
+  .landing-langs{width:100%;justify-content:center;border-radius:12px}
+}
