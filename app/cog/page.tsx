@@ -14,8 +14,11 @@ type Info = {
   origem: string;
   projecao: string;
   pixels: string;
+  tile: string;
   niveis: number;
-  resolucaoNativa: number;
+  niveisView: number;
+  resolucaoNativa: string;
+  ehCog: string;
 };
 
 type Live = {
@@ -112,17 +115,37 @@ export default function CogPrototype() {
 
       const viewConfig = await source.getView();
       const resolutions = (viewConfig.resolutions ?? []) as number[];
-      const extent = (viewConfig.extent ?? [0, 0, 0, 0]) as number[];
-      const nativa = resolutions.length ? resolutions[resolutions.length - 1] : 1;
-      const larguraPx = nativa ? Math.round((extent[2] - extent[0]) / nativa) : 0;
-      const alturaPx = nativa ? Math.round((extent[3] - extent[1]) / nativa) : 0;
+
+      // As dimensões vêm do TIFF, não do array de resoluções da view: sem overviews o
+      // OpenLayers sintetiza níveis extra e o "mais fino" deixa de ser a resolução nativa
+      // — foi assim que um arquivo de 4096² apareceu como 8192².
+      const { fromBlob, fromUrl } = await import("geotiff");
+      const tiff = typeof origem === "string" ? await fromUrl(origem) : await fromBlob(origem);
+      const imagem = await tiff.getImage(0);
+      const totalImagens = await tiff.getImageCount();
+      // Num TIFF por faixas o geotiff.js devolve a largura da imagem como "tile", então
+      // getTileWidth() não distingue tiled de striped. A flag isTiled sim: ela vale false
+      // quando o arquivo tem StripOffsets em vez de TileWidth.
+      const realmenteTiled = Boolean((imagem as unknown as { isTiled?: boolean }).isTiled);
+      const larguraTile = imagem.getTileWidth();
+      const alturaTile = imagem.getTileHeight();
+      const [escalaX] = imagem.getResolution() as number[];
+      // Resolução nativa autoritativa: vem do ModelPixelScale do TIFF.
+      const nativa = Math.abs(escalaX);
 
       setInfo({
-        origem: typeof origem === "string" ? "amostra remota (Sentinel-2 TCI)" : origem.name,
+        origem: origem === SAMPLE ? "amostra remota (Sentinel-2 TCI)"
+          : typeof origem === "string" ? origem : origem.name,
         projecao: codigoProjecao(viewConfig.projection),
-        pixels: `${larguraPx.toLocaleString("pt-BR")} × ${alturaPx.toLocaleString("pt-BR")}`,
-        niveis: resolutions.length,
-        resolucaoNativa: nativa,
+        pixels: `${imagem.getWidth().toLocaleString("pt-BR")} × ${imagem.getHeight().toLocaleString("pt-BR")}`,
+        tile: `${larguraTile} × ${alturaTile}`,
+        niveis: Math.max(0, totalImagens - 1),
+        niveisView: resolutions.length,
+        resolucaoNativa: `${Math.abs(escalaX).toFixed(4)} un/px`,
+        // Sem tiles internos o geotiff.js precisa ler faixas inteiras: funciona, mas
+        // transfere muito mais do que o necessário.
+        ehCog: realmenteTiled && totalImagens > 1 ? "sim"
+          : realmenteTiled ? "tiled, sem overviews" : "não — por faixas",
       });
 
       const desenhos = new VectorSource();
@@ -199,11 +222,28 @@ export default function CogPrototype() {
     }
   }, []);
 
-  // ?amostra=1 carrega a amostra remota sozinho — serve para demonstração e para medir
-  // sem interação. O setTimeout evita setState síncrono dentro do efeito.
+  // Carga automática por parâmetro, para demonstrar e medir sem interação:
+  //   ?amostra=1   a amostra remota do Sentinel-2
+  //   ?url=X       qualquer COG por HTTP, exercitando range requests
+  //   ?blob=X      baixa X inteiro e entrega como Blob, exercitando o mesmo
+  //                caminho de um arquivo escolhido no disco
+  // O setTimeout evita setState síncrono dentro do efeito.
   useEffect(() => {
-    if (new URLSearchParams(window.location.search).get("amostra") !== "1") return;
-    const id = window.setTimeout(() => void load(SAMPLE), 0);
+    const params = new URLSearchParams(window.location.search);
+    const blob = params.get("blob");
+    const url = params.get("url");
+    const alvo = params.get("amostra") === "1" ? SAMPLE : url;
+    if (!blob && !alvo) return;
+    const id = window.setTimeout(() => {
+      if (blob) {
+        void fetch(blob)
+          .then((response) => response.blob())
+          .then((body) => load(new File([body], blob.split("/").pop() || "local.tif")))
+          .catch((error) => setStatus(`Falhou ao baixar para Blob: ${error}`));
+      } else if (alvo) {
+        void load(alvo);
+      }
+    }, 0);
     return () => window.clearTimeout(id);
   }, [load]);
 
@@ -242,8 +282,11 @@ export default function CogPrototype() {
           <dt>Origem</dt><dd>{info.origem}</dd>
           <dt>Projeção</dt><dd>{info.projecao}</dd>
           <dt>Pixels</dt><dd>{info.pixels}</dd>
-          <dt>Níveis da pirâmide</dt><dd>{info.niveis}</dd>
-          <dt>Resolução nativa</dt><dd>{info.resolucaoNativa.toFixed(4)} un/px</dd>
+          <dt>Tile interno</dt><dd>{info.tile}</dd>
+          <dt>Overviews</dt><dd>{info.niveis}</dd>
+          <dt>Níveis na view</dt><dd>{info.niveisView}</dd>
+          <dt>Resolução nativa</dt><dd>{info.resolucaoNativa}</dd>
+          <dt>Perfil COG</dt><dd className={info.ehCog === "sim" ? "" : "cog-bad"}>{info.ehCog}</dd>
         </dl> : <p className="cog-empty">Sem arquivo.</p>}
 
         <h2>Ao vivo</h2>
