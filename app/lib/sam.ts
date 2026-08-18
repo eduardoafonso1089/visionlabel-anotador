@@ -15,11 +15,59 @@ function readDataUrl(blob: Blob, copy: Copy) {
   });
 }
 
-async function assetAsDataUrl(asset: Asset, copy: Copy) {
-  if (asset.src.startsWith("data:")) return asset.src;
-  const response = await fetch(asset.src);
-  if (!response.ok) throw new Error(copy.errSamPrepareImage);
-  return readDataUrl(await response.blob(), copy);
+/**
+ * O SAM recebe a imagem inteira embutida no corpo do pedido, e isso acontece a cada ponto
+ * que o usuário clica. Um recorte de COG no limite de 12 MP vira 34 MB de base64 por
+ * chamada — medido. O modelo redimensiona a entrada para 1024 px de qualquer forma, então
+ * enviar mais que isso é desperdício puro de tempo de rede.
+ */
+const SAM_LADO_MAX = 1600;
+
+type ImagemParaSam = { url: string; largura: number; altura: number };
+
+function carregaImagem(src: string) {
+  return new Promise<HTMLImageElement>((resolve, reject) => {
+    const imagem = new Image();
+    imagem.crossOrigin = "anonymous";
+    imagem.onload = () => resolve(imagem);
+    imagem.onerror = () => reject(new Error("falha ao carregar a imagem"));
+    imagem.src = src;
+  });
+}
+
+async function assetAsDataUrl(asset: Asset, copy: Copy): Promise<ImagemParaSam> {
+  const largura = asset.width ?? EDITOR_WIDTH;
+  const altura = asset.height ?? EDITOR_HEIGHT;
+  const fator = Math.min(1, SAM_LADO_MAX / Math.max(largura, altura));
+
+  if (fator >= 1) {
+    // Já cabe: manter os bytes originais evita reencodar e perder qualidade à toa.
+    if (asset.src.startsWith("data:")) return { url: asset.src, largura, altura };
+    const response = await fetch(asset.src);
+    if (!response.ok) throw new Error(copy.errSamPrepareImage);
+    return { url: await readDataUrl(await response.blob(), copy), largura, altura };
+  }
+
+  try {
+    const imagem = await carregaImagem(asset.src);
+    const alvoLargura = Math.max(1, Math.round(imagem.naturalWidth * fator));
+    const alvoAltura = Math.max(1, Math.round(imagem.naturalHeight * fator));
+    const tela = document.createElement("canvas");
+    tela.width = alvoLargura;
+    tela.height = alvoAltura;
+    const contexto = tela.getContext("2d");
+    if (!contexto) throw new Error("sem contexto 2D");
+    contexto.drawImage(imagem, 0, 0, alvoLargura, alvoAltura);
+    // JPEG porque o destino é um modelo de visão, não um arquivo do usuário: a 0,9 o
+    // artefato fica abaixo do que o próprio redimensionamento interno do SAM introduz.
+    return { url: tela.toDataURL("image/jpeg", 0.9), largura: alvoLargura, altura: alvoAltura };
+  } catch {
+    // Canvas contaminado por imagem de outra origem, ou navegador sem 2D: manda o
+    // original. Fica lento, mas funciona.
+    const response = await fetch(asset.src);
+    if (!response.ok) throw new Error(copy.errSamPrepareImage);
+    return { url: await readDataUrl(await response.blob(), copy), largura, altura };
+  }
 }
 
 function flattenPolygon(value: unknown): number[] | null {
@@ -98,9 +146,9 @@ function parseResponse(body: SamResponse, width: number, height: number, copy: C
 }
 
 export async function requestSamMask({ endpoint, asset, prompts, copy }: { endpoint: string; asset: Asset; prompts: SamPrompt[]; copy: Copy }) {
-  const width = asset.width ?? 1000;
-  const height = asset.height ?? 650;
-  const image = await assetAsDataUrl(asset, copy);
+  // As dimensões vêm do que foi realmente enviado: se a imagem foi reduzida, os pontos e
+  // o polígono de volta precisam falar na escala dela, senão a máscara sai deslocada.
+  const { url: image, largura: width, altura: height } = await assetAsDataUrl(asset, copy);
   const pointCoords = prompts.map((prompt) => [prompt.x / EDITOR_WIDTH * width, prompt.y / EDITOR_HEIGHT * height]);
   const pointLabels = prompts.map((prompt) => prompt.label);
   const controller = new AbortController();
