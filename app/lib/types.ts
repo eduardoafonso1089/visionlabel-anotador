@@ -30,6 +30,7 @@ export type Asset = {
 
 export type Annotation = {
   id: string;
+  instanceId?: string;
   asset: string;
   label: string;
   type: "box" | "polygon" | "point";
@@ -44,4 +45,18 @@ export type SamPrompt = {
   x: number;
   y: number;
   label: 0 | 1;
+};
+
+export type SamBoxPrompt = {
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  label: 0 | 1;
+};
+
+export type SamMaskPrediction = {
+  polygons: number[][];
+  score: number | null;
+  bbox: [number, number, number, number] | null;
 };

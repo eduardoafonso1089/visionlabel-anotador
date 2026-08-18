@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { annotationBounds, polygonArea, scalePoints } from "./geometry";
+import { annotationBounds, annotationsBounds, polygonArea, scalePoints } from "./geometry";
 import type { Annotation, Asset, Label } from "./types";
 
 function baseName(name: string, fallback: string) {
@@ -21,6 +21,29 @@ export function downloadBlob(name: string, blob: Blob) {
   }, 1500);
 }
 
+function groupCocoAnnotations(annotations: Annotation[]) {
+  const groups: Annotation[][] = [];
+  const groupedInstanceIndexes = new Map<string, number>();
+
+  annotations.forEach((annotation) => {
+    if (annotation.type !== "polygon" || !annotation.instanceId) {
+      groups.push([annotation]);
+      return;
+    }
+
+    const key = `${annotation.asset}\u0000${annotation.label}\u0000${annotation.instanceId}`;
+    const existingIndex = groupedInstanceIndexes.get(key);
+    if (existingIndex === undefined) {
+      groupedInstanceIndexes.set(key, groups.length);
+      groups.push([annotation]);
+      return;
+    }
+    groups[existingIndex].push(annotation);
+  });
+
+  return groups;
+}
+
 export function exportCoco(assets: Asset[], labels: Label[], annotations: Annotation[]) {
   const images = assets.map((asset, index) => ({
     id: index + 1,
@@ -33,22 +56,24 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
     name: label.name,
     supercategory: "object",
   }));
-  const cocoAnnotations = annotations.map((annotation, index) => {
+  const cocoAnnotations = groupCocoAnnotations(annotations).map((components, index) => {
+    const annotation = components[0];
     const imageIndex = assets.findIndex((asset) => asset.id === annotation.asset);
     const categoryIndex = labels.findIndex((label) => label.id === annotation.label);
     const image = assets[imageIndex];
     const width = image?.width ?? 1000;
     const height = image?.height ?? 650;
-    const bounds = annotationBounds(annotation);
+    const bounds = annotation.type === "polygon" ? annotationsBounds(components) : annotationBounds(annotation);
     const scaledBounds = scalePoints(
       [bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height],
       width,
       height,
     );
-    const segmentation =
-      annotation.type === "polygon" ? [scalePoints(annotation.pts ?? [], width, height)] : [];
+    const segmentation = annotation.type === "polygon"
+      ? components.map((component) => scalePoints(component.pts ?? [], width, height))
+      : [];
     const area = annotation.type === "polygon"
-      ? polygonArea(scalePoints(annotation.pts ?? [], width, height))
+      ? segmentation.reduce((total, polygon) => total + polygonArea(polygon), 0)
       : (scaledBounds[2] - scaledBounds[0]) * (scaledBounds[3] - scaledBounds[1]);
     return {
       id: index + 1,
@@ -109,7 +134,7 @@ export async function exportYoloZip(assets: Asset[], labels: Label[], annotation
   );
   zip.file(
     "README.txt",
-    "Exportação VisionLabel para YOLO. Caixas usam o formato de detecção e polígonos usam o formato de segmentação. Pontos-chave permanecem disponíveis na exportação COCO.\n",
+    "Exportação VisionLabel para YOLO. Caixas usam o formato de detecção e polígonos usam o formato de segmentação. Pontos-chave permanecem disponíveis na exportação COCO. Componentes desconectados de uma mesma instância SAM são linhas separadas no YOLO; use COCO para preservar o agrupamento multipolígono.\n",
   );
   downloadBlob("visionlabel-yolo.zip", await zip.generateAsync({ type: "blob" }));
 }
