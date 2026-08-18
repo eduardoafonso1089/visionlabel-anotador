@@ -21,12 +21,30 @@ Scripts that need writable project-scoped home, npm, XDG, and temporary paths us
 
 ## SAM local
 
-O VisionLabel usa um conector FastAPI executado no computador do usuário; imagens e prompts não são enviados para o Site. A tela **Ativar SAM local** oferece dois instaladores autocontidos:
+O VisionLabel usa um conector FastAPI executado no computador do usuário; imagens e prompts não são enviados ao Site. A tela **Ativar SAM local** contém um catálogo com requisitos, licença, tamanho do checkpoint, plataforma e benchmark oficial — sempre acompanhado do hardware em que o número foi medido.
 
-- `public/visionlabel-sam-windows.bat`: prepara Python quando necessário, cria um ambiente isolado, instala as dependências, baixa o checkpoint ViT-B oficial e inicia o conector;
-- `public/visionlabel-sam-macos-linux.sh`: faz a mesma preparação usando o Python 3 já instalado no sistema.
+Modelos disponíveis:
 
-O conector fica em `http://127.0.0.1:7860`, detecta CUDA, Apple Silicon/MPS ou CPU automaticamente e mantém em cache o embedding da imagem atual para acelerar prompts adicionais. A alternativa manual continua disponível em `public/visionlabel-sam-local.py`.
+| Família | Variantes | Uso nesta versão | Requisitos principais |
+| --- | --- | --- | --- |
+| SAM 1 | ViT-B, ViT-L, ViT-H | pontos positivos/negativos e caixas | Python 3.10+ no conector; CPU, CUDA ou Apple MPS |
+| SAM 2.1 | Hiera Tiny, Small, Base+, Large | pontos positivos/negativos e caixas; Small é o padrão | Python 3.10+, PyTorch 2.5.1+, Torchvision 0.20.1+; CUDA recomendada |
+| SAM 3 | Imagem e conceitos | pontos, caixas e texto com múltiplas instâncias | Python 3.12+, PyTorch 2.7+, GPU e CUDA 12.6+; acesso gated no Hugging Face |
+
+SAM 2.1 também possui tracking de vídeo no upstream. O SAM 3.1, lançado pela Meta em 27/03/2026, adiciona Object Multiplex para vídeo, mas ainda não está integrado nem é instalado pelo VisionLabel. O editor atual integra somente imagens e deixa essa diferença explícita.
+
+Instalação e início:
+
+- `public/visionlabel-sam-macos-linux.sh <model-id>` instala no Linux, macOS quando suportado ou WSL2 e inicia o modelo escolhido;
+- `public/visionlabel-sam-windows.bat <model-id>` instala SAM 1 nativamente e delega automaticamente SAM 2.1 ou SAM 3 ao WSL2, preservando o mesmo menu e ID de modelo;
+- os launchers `public/visionlabel-sam-start-macos-linux.sh` e `public/visionlabel-sam-start-windows.bat` reiniciam uma instalação existente;
+- `public/visionlabel-sam-local.py` é o conector manual unificado, com CLI `--model`, `--checkpoint`, `--model-config` (nome Hydra do SAM 2), `--device` e `--port`.
+
+O endpoint padrão é `http://127.0.0.1:7860/predict`. O conector valida o modelo solicitado, publica estado e capacidades em `/health`, detecta o dispositivo compatível e mantém em cache a representação da imagem atual para acelerar refinamentos. Requisições do navegador aceitam somente a origem oficial, origens loopback de desenvolvimento e origens adicionais declaradas em `VISIONLABEL_ALLOWED_ORIGINS`; os launchers configuram isso a partir de `VISIONLABEL_SITE_URL`. Checkpoints SAM 1 e SAM 2.1 vêm dos downloads oficiais da Meta; SAM 3 exige aceitar os termos e executar `hf auth login` localmente.
+
+Pesos e dependências nunca são gravados no checkout: Linux, macOS e WSL2 usam `~/.visionlabel-sam/`, enquanto o runtime nativo do Windows usa `%LOCALAPPDATA%\VisionLabelSAM`. O `.gitignore` também bloqueia formatos de checkpoint, ambientes virtuais e diretórios de modelos como proteção adicional.
+
+Por segurança de memória, o serviço limita cada imagem a 16 megapixels, processa no máximo quatro corpos de previsão simultaneamente e devolve no máximo 64 instâncias SAM 3. Esses valores podem ser ajustados conscientemente com `VISIONLABEL_MAX_IMAGE_PIXELS`, `VISIONLABEL_MAX_CONCURRENT_REQUESTS` e `VISIONLABEL_SAM3_MAX_PREDICTIONS`; o limiar conceitual mínimo do SAM 3 usa `VISIONLABEL_SAM3_MIN_CONCEPT_THRESHOLD` e começa em `0.1`.
 
 ## Included Shape
 

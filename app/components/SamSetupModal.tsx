@@ -91,9 +91,8 @@ export default function SamSetupModal({
     .filter(([, enabled]) => enabled)
     .map(([capability]) => capabilityLabels[capability as keyof typeof capabilityLabels]);
   const unixCommand = `bash visionlabel-sam-macos-linux.sh ${model.id}`;
-  const windowsCommand = model.family === "sam1"
-    ? `visionlabel-sam-windows.bat ${model.id}`
-    : `wsl bash visionlabel-sam-macos-linux.sh ${model.id}`;
+  const windowsCommand = `visionlabel-sam-windows.bat ${model.id}`;
+  const windowsPlatformLabel = model.family === "sam1" ? "Windows nativo" : "Windows · WSL2";
   const unixPlatformLabel = model.family === "sam3"
     ? "Linux · NVIDIA CUDA"
     : model.family === "sam2"
@@ -168,10 +167,10 @@ export default function SamSetupModal({
             <div><b>Instalar o modelo selecionado</b><p>O instalador cria um ambiente separado por família e baixa apenas o checkpoint escolhido.</p></div>
             <div className="sam-install-actions">
               <a className="primary" href="/visionlabel-sam-macos-linux.sh" download><Download size={15} /><span><strong>{unixPlatformLabel}</strong><small>{unixCommand}</small></span></a>
-              <a className={model.family === "sam1" ? "" : "limited"} href="/visionlabel-sam-windows.bat" download><Download size={15} /><span><strong>Windows nativo</strong><small>{model.family === "sam1" ? windowsCommand : "Use WSL2 para este modelo"}</small></span></a>
+              <a className={model.family === "sam3" ? "limited" : ""} href="/visionlabel-sam-windows.bat" download><Download size={15} /><span><strong>{windowsPlatformLabel}</strong><small>{windowsCommand}</small></span></a>
             </div>
             <code>{unixCommand}</code>
-            <div className="sam-launch-actions"><span>Já instalado?</span><a href="/visionlabel-sam-start-macos-linux.sh" download>Baixar iniciador {unixPlatformLabel}</a>{model.family === "sam1" && <a href="/visionlabel-sam-start-windows.bat" download>Baixar iniciador Windows</a>}</div>
+            <div className="sam-launch-actions"><span>Já instalado?</span><a href="/visionlabel-sam-start-macos-linux.sh" download>Baixar iniciador {unixPlatformLabel}</a><a href="/visionlabel-sam-start-windows.bat" download>Baixar iniciador {windowsPlatformLabel}</a></div>
             <p className="sam-platform-note"><b>Linux:</b> {model.platformSupport.linux.notes} <b>Windows:</b> {model.platformSupport.windows.notes} <b>macOS:</b> {model.platformSupport.macos.notes}</p>
           </section>
 

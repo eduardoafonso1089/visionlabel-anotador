@@ -43,3 +43,23 @@ next-env.d.ts
 /.sites-runtime/
 /outputs/
 /work/
+
+# SAM runtimes and model weights are always downloaded locally, never versioned.
+/.visionlabel-sam/
+/VisionLabelSAM/
+/.venv/
+/venv/
+/venvs/
+/models/
+/checkpoints/
+/weights/
+/downloads/
+*.pth
+*.pt
+*.ckpt
+*.safetensors
+*.onnx
+*.pth.part
+*.pt.part
+*.ckpt.part
+*.safetensors.part
