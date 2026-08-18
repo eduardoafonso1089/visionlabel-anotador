@@ -3,7 +3,7 @@
 import {
   Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
   Combine, Copy, Download, Eye, EyeOff, FileText, FolderOpen, FolderUp, Hand, HardDriveDownload, ImagePlus, Images, Keyboard, Languages, Link2,
-  Focus, ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine, Save, ShieldCheck,
+  Focus, Globe, ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine, Save, ShieldCheck,
   Monitor, Moon, Palette, Pencil, Pentagon, Plus, Power, Redo2, Scissors, Search, Settings2, Sparkles,
   Spline, Square, Sun, Tags, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
 } from "lucide-react";
@@ -14,11 +14,14 @@ import {
   polygonBounds, polygonCenter, reshapePolygon, simplifyPolygon, snapPointToPolygons,
   splitPolygon, transformPolygon, translateAnnotation, unionPolygons, updatePolygonVertex,
 } from "../lib/geometry";
-import { exportCoco, exportYoloZip } from "../lib/exporters";
+import { exportCoco, exportGeoJson, exportYoloZip } from "../lib/exporters";
 import { fill, getCopy, storedLanguage, storedTheme } from "../lib/i18n";
 import { openEpiakaProject, saveEpiakaProject } from "../lib/project";
 import type { ProjectSaveMode } from "../lib/project";
 import { requestSamMask } from "../lib/sam";
+import CogRecorte from "./CogRecorte";
+import { ehArquivoTiff } from "../lib/cog";
+import type { Recorte } from "../lib/cog";
 import type { Language, ThemeMode } from "../lib/i18n";
 import type { Annotation, Asset, Label, SamPrompt, Tool } from "../lib/types";
 
@@ -160,6 +163,9 @@ export default function Home() {
   const [saved, setSaved] = useState(true);
   const [newLabel, setNewLabel] = useState("");
   const [newLabelColor, setNewLabelColor] = useState(colors[0]);
+  // GeoTIFF não vira asset direto: cada arquivo passa pelo recorte antes de entrar na
+  // lista. A fila existe porque o usuário pode soltar vários de uma vez.
+  const [cogFila, setCogFila] = useState<File[]>([]);
   const [batchLabel, setBatchLabel] = useState(UNLABELED_ID);
   const [leftOpen, setLeftOpen] = useState(false);
   const [rightOpen, setRightOpen] = useState(false);
@@ -896,7 +902,16 @@ export default function Home() {
 
   function files(list: FileList | null) {
     const uploadId = makeId("upload");
-    const imageFiles = Array.from(list ?? []).filter((file) => file.type.startsWith("image/"));
+    const todos = Array.from(list ?? []);
+    // O navegador não decodifica TIFF, então esses vão para a fila de recorte em vez de
+    // virar asset. O type de um .tif varia entre sistemas, daí a checagem também por nome.
+    const geotiffs = todos.filter((file) => ehArquivoTiff(file.name, file.type));
+    if (geotiffs.length) {
+      setCogFila((atual) => [...atual, ...geotiffs]);
+      setLeftOpen(false);
+    }
+    const imageFiles = todos.filter((file) =>
+      file.type.startsWith("image/") && !ehArquivoTiff(file.name, file.type));
     if (!imageFiles.length) return;
     const missingByName = new Map<string, Asset[]>();
     assets.filter((item) => item.missing).forEach((item) => {
@@ -918,6 +933,31 @@ export default function Home() {
     if (nextCurrent) setCurrent(nextCurrent);
     setSaved(false); setLeftOpen(false);
     if (replacements.size) showToast(`${replacements.size} ${copy.projectImagesRestored}`);
+  }
+
+  // O recorte entra como imagem comum: é isso que faz toda ferramenta já existente, e o
+  // SAM junto, funcionarem sobre um COG sem nenhuma alteração nelas.
+  function recorteVirouAsset(recorte: Recorte, nomeOrigem: string) {
+    const src = URL.createObjectURL(recorte.blob);
+    projectObjectUrlsRef.current.push(src);
+    const base = nomeOrigem.split(/[\\/]/).pop() ?? nomeOrigem;
+    const semExtensao = base.replace(/\.[^.]+$/, "");
+    const janela = recorte.geo.window;
+    const asset: Asset = {
+      id: makeId("cog"),
+      name: `${semExtensao}-${Math.round(janela.x)}-${Math.round(janela.y)}.png`,
+      src,
+      local: true,
+      byteSize: recorte.blob.size,
+      width: recorte.largura,
+      height: recorte.altura,
+      geo: recorte.geo,
+    };
+    setAssets((items) => [asset, ...items]);
+    setCurrent(asset.id);
+    setSaved(false);
+    setCogFila((atual) => atual.slice(1));
+    showToast(copy.cogCropAdded);
   }
 
   function addClass() {
@@ -1099,14 +1139,23 @@ export default function Home() {
     } finally { setProjectBusy(false); }
   }
 
-  async function exportData(kind: "coco" | "yolo" | "project") {
+  async function exportData(kind: "coco" | "yolo" | "geojson" | "project") {
     if (!assets.length) { setProjectOpen(false); setLeftOpen(true); showToast(copy.emptyProjectHint); return; }
     if (kind === "project") { openSaveProjectDialog(); return; }
     setExporting(true);
     try {
       if (kind === "coco") exportCoco(assets, labels, annotations);
       if (kind === "yolo") await exportYoloZip(assets, labels, annotations, copy.yoloReadme);
-      setProjectOpen(false); showToast(kind === "yolo" ? copy.toastExportYolo : copy.toastExportFile);
+      if (kind === "geojson") {
+        // Sem recorte de COG não há origem nem escala, e um GeoJSON em coordenada de pixel
+        // seria pior que nenhum: parece georreferenciado e não é.
+        const semGeo = !assets.some((asset) => asset.geo);
+        if (semGeo) { setExporting(false); showToast(copy.errGeoJsonNoGeo); return; }
+        exportGeoJson(assets, labels, annotations);
+      }
+      setProjectOpen(false);
+      showToast(kind === "yolo" ? copy.toastExportYolo
+        : kind === "geojson" ? copy.toastExportGeoJson : copy.toastExportFile);
     } catch { showToast(copy.toastExportFailed); }
     finally { setExporting(false); }
   }
@@ -1206,6 +1255,7 @@ export default function Home() {
               <p>{copy.exportFormat}</p>
               <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("coco")}><FileText size={14} /><span><b>COCO JSON</b><small>{copy.cocoDesc}</small></span></button>
               <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("yolo")}><HardDriveDownload size={14} /><span><b>YOLO ZIP</b><small>{copy.yoloDesc}</small></span></button>
+              <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("geojson")}><Globe size={14} /><span><b>GeoJSON</b><small>{copy.geojsonDesc}</small></span></button>
               <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("project")}><Download size={14} /><span><b>Epiaka</b><small>{copy.projectBackup}</small></span></button>
               <i className="menu-separator" />
               <button role="menuitem" onClick={() => { setProjectOpen(false); setPreferencesOpen(true); }}><Settings2 size={14} /><span><b>{copy.preferences}</b><small>{copy.appearance} · {copy.language}</small></span></button>
@@ -1218,7 +1268,7 @@ export default function Home() {
       <aside className={`assets ${leftOpen ? "open" : ""}`}>
         <div className="drawer-head"><b>{copy.images}</b><button onClick={() => setLeftOpen(false)}><X size={19} /></button></div>
         <div className="aside-title"><span>{copy.images} <b>{assets.length}</b></span><button onClick={() => input.current?.click()}><Plus size={16} /></button></div>
-        <input hidden ref={input} type="file" accept="image/*" multiple onChange={(event) => files(event.target.files)} />
+        <input hidden ref={input} type="file" accept="image/*,.tif,.tiff" multiple onChange={(event) => files(event.target.files)} />
         <button className="import" onClick={() => input.current?.click()}><ImagePlus size={16} /> {copy.importImages}</button>
         <label className="search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={copy.searchImage} /></label>
         <div className="progress"><div><span>{copy.progress}</span><b>{completed} {copy.of} {assets.length}</b></div><i><em style={{ width: `${assets.length ? completed / assets.length * 100 : 0}%` }} /></i></div>
@@ -1294,6 +1344,15 @@ export default function Home() {
         <div className="hint"><b>{activeAnnotation?.type === "polygon" ? copy.vectorEditing : copy.quickTip}</b><p>{activeAnnotation?.type === "polygon" ? copy.vectorHint : copy.shortcutHint}</p></div>
       </aside>
     </div>
+
+    {cogFila.length > 0 && <CogRecorte
+      key={`${cogFila[0].name}-${cogFila[0].size}-${cogFila.length}`}
+      origem={cogFila[0]}
+      nome={cogFila[0].name}
+      copy={copy}
+      onCancelar={() => setCogFila((atual) => atual.slice(1))}
+      onPronto={recorteVirouAsset}
+    />}
 
     {classManagerOpen && <div className="modal-backdrop class-manager-backdrop"><section className="class-manager-page" role="dialog" aria-modal="true" aria-labelledby="class-manager-title"><header><div><span><Palette size={20} /></span><div><h2 id="class-manager-title">{copy.classManagerTitle}</h2><p>{copy.classManagerHint}</p></div></div><button onClick={() => { setClassManagerOpen(false); setSelectedClassIds([]); }} aria-label={copy.close}><X size={21} /></button></header><div className="class-manager-body"><div className="class-manager-sidebar"><section className="label-creator"><div><Palette size={14} /><span><b>{copy.labelStudio}</b><small>{copy.labelStudioHint}</small></span></div><div className="label-create-row"><input ref={labelInputRef} aria-label={copy.className} placeholder={copy.className} value={newLabel} onChange={(event) => setNewLabel(event.target.value)} onKeyDown={(event) => event.key === "Enter" && addClass()} /><input className="label-color" type="color" aria-label={copy.labelColor} title={copy.labelColor} value={newLabelColor} onChange={(event) => setNewLabelColor(event.target.value)} /><button aria-label={copy.createLabel} title={copy.createLabel} disabled={!newLabel.trim()} onClick={addClass}><Plus size={15} /></button></div></section><section className="class-manager-active"><div><Tags size={14} /><span><b>{copy.newAnnotationClass}</b><small>{copy.newShapesClass}</small></span></div><select aria-label={copy.newAnnotationClass} value={activeLabel} onChange={(event) => setActiveLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.id === UNLABELED_ID ? copy.unlabeled : label.name}</option>)}</select></section></div><section className="class-manager-classes"><div className="class-manager-list-head"><div><b>{copy.classList}</b><span>{labels.length} {copy.classes.toLocaleLowerCase()}</span></div>{selectableClasses.length > 0 && <button onClick={() => setSelectedClassIds(selectedClassIds.length === selectableClasses.length ? [] : selectableClasses.map((label) => label.id))}>{selectedClassIds.length === selectableClasses.length ? copy.clearClassSelection : copy.selectAllClasses}</button>}</div>{selectedClassIds.length > 0 && <div className="class-selection-summary"><span>{selectedClassIds.length} {copy.classesSelected}</span><button onClick={() => requestClassDeletion(selectedClassIds)}><Trash2 size={12} />{copy.deleteSelectedClasses}</button></div>}<div className="label-list class-manager-list">{labels.map((label) => { const isHidden = hiddenLabels.includes(label.id); const isUnlabeled = label.id === UNLABELED_ID; const isChecked = selectedClassIds.includes(label.id); return <div key={label.id} className={`label-row ${isHidden ? "hidden" : ""} ${isChecked ? "checked" : ""}`}>{isUnlabeled ? <span className="label-selector-spacer" /> : <button className={`label-selector ${isChecked ? "selected" : ""}`} aria-label={`${copy.selectClass}: ${label.name}`} aria-pressed={isChecked} onClick={() => setSelectedClassIds((items) => items.includes(label.id) ? items.filter((id) => id !== label.id) : [...items, label.id])}>{isChecked && <Check size={11} />}</button>}<div className="label-main"><i style={{ background: label.color }} /><span>{isUnlabeled ? copy.unlabeled : label.name}</span><em>{annotations.filter((annotation) => annotation.label === label.id).length}</em>{label.key ? <kbd>{label.key}</kbd> : <span />}</div><button className="visibility-toggle" title={isHidden ? copy.showClass : copy.hideClass} aria-label={`${isHidden ? copy.showClass : copy.hideClass}: ${label.name}`} onClick={() => toggleLabelVisibility(label.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button><button className="delete-label" disabled={isUnlabeled} title={isUnlabeled ? copy.unlabeledProtected : copy.deleteClass} aria-label={`${copy.deleteClass}: ${label.name}`} onClick={() => requestClassDeletion([label.id])}><Trash2 size={13} /></button></div>; })}</div></section></div><footer><button onClick={() => { setClassManagerOpen(false); setSelectedClassIds([]); }}><Check size={14} />{copy.close}</button></footer></section></div>}
     {projectSaveOpen && <div className="modal-backdrop"><section className="sam-modal project-save-modal" role="dialog" aria-modal="true" aria-labelledby="project-save-title"><header><div><span><Save size={18} /></span><div><h2 id="project-save-title">{copy.saveProjectTitle}</h2><p>{copy.saveProjectDescription}</p></div></div><button onClick={() => setProjectSaveOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="project-save-options" role="radiogroup" aria-label={copy.saveProjectTitle}><button className={projectSaveMode === "annotations" ? "active" : ""} role="radio" aria-checked={projectSaveMode === "annotations"} onClick={() => setProjectSaveMode("annotations")}><span><FileText size={20} /></span><div><b>{copy.annotationsOnly}</b><p>{copy.annotationsOnlyHint}</p><small>{formatBytes(annotationProjectBytes)} · {assets.length} {copy.imageReferences}</small></div><Check size={16} /></button><button className={projectSaveMode === "complete" ? "active" : ""} role="radio" aria-checked={projectSaveMode === "complete"} disabled={missingProjectImages > 0} onClick={() => setProjectSaveMode("complete")}><span><Images size={20} /></span><div><b>{copy.imagesAndAnnotations}</b><p>{copy.imagesAndAnnotationsHint}</p><small>{knownProjectImageBytes ? `${formatBytes(knownProjectImageBytes)} + ${formatBytes(annotationProjectBytes)}` : copy.sizeCalculatedOnSave}</small>{missingProjectImages > 0 && <em>{missingProjectImages} {copy.projectImagesNeedReload}</em>}</div><Check size={16} /></button></div><div className="project-save-privacy"><ShieldCheck size={16} /><div><b>{copy.localOnly}</b><p>{copy.projectSavePrivacy}</p></div></div><footer><button onClick={() => setProjectSaveOpen(false)}>{copy.cancel}</button><button className="connect" disabled={projectBusy || (projectSaveMode === "complete" && missingProjectImages > 0)} onClick={() => void savePortableProject(projectSaveMode)}>{projectBusy ? <LoaderCircle className="spin" size={15} /> : <Download size={15} />}{copy.generateProjectFile}</button></footer></section></div>}
