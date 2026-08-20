@@ -212,3 +212,13 @@ body:has(.landing){overflow:auto}
 html,html[data-theme="dark"]{--green:#7C5CFC;--lime:#C8B8FF;--tool-active-bg:#282244;--tool-active-ink:#9D88FF;--tool-active-border:#4E3CAF;--btn-accent-ink:#C8B8FF}
 html[data-theme="light"]{--green:#5D43D8;--lime:#412EAD;--tool-active-bg:#ECE8FF;--tool-active-ink:#412EAD;--tool-active-border:#C8BEFF;--btn-accent-ink:#5D43D8}
 @media(prefers-color-scheme:light){html[data-theme="system"]{--green:#5D43D8;--lime:#412EAD;--tool-active-bg:#ECE8FF;--tool-active-ink:#412EAD;--tool-active-border:#C8BEFF;--btn-accent-ink:#5D43D8}}
+
+/* Controles diretos para remover imagens e anotações da sessão. */
+.aside-title>div{display:flex;align-items:center;gap:2px}.aside-title button:disabled{opacity:.35;cursor:default}.annotation-editor .instance-row{grid-template-columns:29px minmax(0,1fr) 31px 28px}.instance-row .delete-annotation{width:26px;height:26px;border:0;background:transparent;border-radius:6px;display:grid;place-items:center;padding:0;color:var(--muted);cursor:pointer}.instance-row .delete-annotation:hover{background:var(--danger-bg);color:var(--danger)}
+.asset-list>.asset-row{display:grid;grid-template-columns:28px minmax(0,1fr);align-items:center;border:1px solid transparent;border-radius:8px}.asset-list>.asset-row:hover{background:var(--theme-hover)}.asset-list>.asset-row.active{background:color-mix(in srgb,var(--green) 22%,var(--surface));border-color:color-mix(in srgb,var(--green) 55%,var(--line));box-shadow:inset 3px 0 var(--green)}.asset-row .asset-selector{width:20px;height:20px;margin-left:4px;border:1px solid var(--line);border-radius:5px;background:var(--control-bg);color:var(--tool-hint-ink);display:grid;place-items:center;padding:0;cursor:pointer}.asset-row .asset-selector.selected{border-color:var(--green);background:var(--green);color:var(--on-brand)}.asset-row .asset-main{width:100%;display:grid;grid-template-columns:48px minmax(0,1fr) 17px;gap:9px;align-items:center;border:0;background:transparent;padding:7px;text-align:left;cursor:pointer}.asset-row .asset-main>div:nth-child(2){min-width:0}.asset-row .asset-main i{width:16px;height:16px;border:1px solid var(--line);border-radius:50%;display:grid;place-items:center;font-size:10px;font-style:normal;color:var(--tool-hint-ink)}.asset-row .asset-main i.checked{background:var(--green);border-color:var(--green)}
+
+/* A foto é decodificada antes de liberar a tela; junto dela entra o SVG da máscara. */
+.canvas>img.image-loading{visibility:hidden}
+
+/* Mantém a janela de navegação pronta no DOM; somente o quadro selecionado é visível. */
+.canvas>img{position:absolute;inset:0}.canvas>img.image-preload{visibility:hidden;pointer-events:none}.canvas>img.image-current{visibility:visible}

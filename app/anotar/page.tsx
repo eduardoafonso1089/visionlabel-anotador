@@ -96,16 +96,44 @@ function ToolButton({ title, active, disabled, onClick, children, keyHint }: { t
 // handleScale (100/zoom), o tamanho na tela fica constante em qualquer nível de zoom.
 const MARKER_RADIUS = 4.6;
 
+// Máscaras rasterizadas podem ter milhares de pontos. Para a visualização, um desvio abaixo
+// de um pixel não é perceptível, mas reduz drasticamente o trabalho do SVG. A geometria
+// original nunca é alterada: ela continua sendo usada ao selecionar, editar e exportar.
+const maskPreviewCache = new WeakMap<number[], string>();
+function maskPreviewPoints(points: number[] = []) {
+  if (points.length <= 400) return pointsToSvg(points);
+  const cached = maskPreviewCache.get(points);
+  if (cached) return cached;
+  const preview = pointsToSvg(simplifyPolygon(points, 0.8));
+  maskPreviewCache.set(points, preview);
+  return preview;
+}
+
 // Nós de polígono encolhem conforme a densidade de vértices para não se sobreporem, mas nunca
 // passam do raio base — então um polígono simples tem nós do mesmo tamanho dos outros marcadores.
-function polygonHandleRadius(vertexCount: number, zoomScale: number) {
-  return Math.max(MARKER_RADIUS * .52, Math.min(MARKER_RADIUS, 25 / Math.sqrt(Math.max(1, vertexCount)))) * zoomScale;
+function polygonHandleRadius(zoomScale: number) {
+  return MARKER_RADIUS * zoomScale;
 }
 
 function formatBytes(bytes: number) {
   if (!bytes) return "—";
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function readImageDimensions(src: string) {
+  return new Promise<{ width: number; height: number } | null>((resolve) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => resolve(null);
+    image.src = src;
+  });
+}
+
+function warmImage(src: string) {
+  const image = new Image();
+  image.src = src;
+  void image.decode().catch(() => undefined);
 }
 
 export default function Home() {
@@ -131,6 +159,7 @@ export default function Home() {
   const [reshapeStartInside, setReshapeStartInside] = useState<boolean | null>(null);
   const [snapping, setSnapping] = useState(true);
   const [snapGuide, setSnapGuide] = useState<{ x: number; y: number } | null>(null);
+  const [readyImageIds, setReadyImageIds] = useState<string[]>([]);
   const [zoom, setZoom] = useState(92);
   const [lineThickness, setLineThickness] = useState(() => {
     if (typeof window === "undefined") return 3;
@@ -169,6 +198,7 @@ export default function Home() {
   const [splitEnd, setSplitEnd] = useState<{ x: number; y: number } | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [selectedClassIds, setSelectedClassIds] = useState<string[]>([]);
+  const [selectedAssetIds, setSelectedAssetIds] = useState<string[]>([]);
   const [pendingDeleteClassIds, setPendingDeleteClassIds] = useState<string[]>([]);
   const [pendingDeleteAnnotationIds, setPendingDeleteAnnotationIds] = useState<string[]>([]);
   const [samOpen, setSamOpen] = useState(false);
@@ -188,6 +218,7 @@ export default function Home() {
   const [samPreview, setSamPreview] = useState<number[]>([]);
   const [samLoading, setSamLoading] = useState(false);
   const input = useRef<HTMLInputElement>(null);
+  const cocoInputRef = useRef<HTMLInputElement>(null);
   const openProjectInputRef = useRef<HTMLInputElement>(null);
   const labelInputRef = useRef<HTMLInputElement>(null);
   const projectInputRef = useRef<HTMLInputElement>(null);
@@ -207,6 +238,9 @@ export default function Home() {
   const idCounter = useRef(0);
 
   const asset = assets.find((item) => item.id === current) ?? assets[0];
+  const assetIndex = Math.max(0, assets.findIndex((item) => item.id === asset?.id));
+  const imageWindow = assets.slice(Math.max(0, assetIndex - 3), assetIndex + 4).filter((item) => !item.missing);
+  const imageIsReady = !!asset && readyImageIds.includes(asset.id);
   const currentAnnotations = annotations.filter((annotation) => annotation.asset === current);
   const currentPolygonIds = currentAnnotations.filter((annotation) => annotation.type === "polygon").map((annotation) => annotation.id);
   const allCurrentPolygonsSelected = currentPolygonIds.length > 0 && currentPolygonIds.every((id) => multiSelected.includes(id));
@@ -233,6 +267,9 @@ export default function Home() {
     : 0;
   const handleScale = Math.max(0.25, Math.min(3.34, 100 / zoom));
   const markerRadius = MARKER_RADIUS * handleScale;
+  // O SVG usa viewBox fixo sobre imagens de proporções variadas. Compensar o eixo Y
+  // evita que um círculo de controle vire uma elipse ao trocar de imagem.
+  const markerAspect = 650 * (asset?.width ?? 1000) / (1000 * (asset?.height ?? 650));
   const selectedIds = multiSelected.length ? multiSelected : selected ? [selected] : [];
   const resolvedBatchLabel = labels.some((label) => label.id === batchLabel) ? batchLabel : labels[0]?.id ?? "";
   const selectableClasses = labels.filter((label) => label.id !== UNLABELED_ID);
@@ -467,6 +504,46 @@ export default function Home() {
     scroller.addEventListener("wheel", onWheel, { passive: false });
     return () => scroller.removeEventListener("wheel", onWheel);
   }, [applyZoom, mounted, zoom]);
+
+  // Mantém a janela de navegação na memória/decodificada, sem ocupar RAM com o dataset inteiro.
+  useEffect(() => {
+    const index = Math.max(0, assets.findIndex((item) => item.id === current));
+    assets.slice(Math.max(0, index - 3), index + 4).forEach((item) => { if (!item.missing) warmImage(item.src); });
+  }, [assets, current]);
+
+  function zoomToFit(image: Asset) {
+    const scroller = scrollRef.current;
+    if (!scroller) return 92;
+    const imageWidth = image.width ?? 1000;
+    const imageHeight = image.height ?? 650;
+    const widthAtHundred = Math.max(1, scroller.clientWidth);
+    const heightAtHundred = widthAtHundred * imageHeight / imageWidth;
+    const heightFit = scroller.clientHeight / Math.max(1, heightAtHundred) * 100;
+    return Math.max(10, Math.min(100, Math.floor(Math.min(100, heightFit) * 0.96)));
+  }
+
+  // Cada imagem tem seu proprio enquadramento: ao trocar o arquivo, o zoom e o
+  // scroll anteriores nao podem ser reutilizados.
+  useEffect(() => {
+    if (!current || !asset?.width || !asset?.height) return;
+    const scroller = scrollRef.current;
+    if (!scroller) return;
+    setZoom(zoomToFit(asset));
+
+    let innerFrame = 0;
+    const outerFrame = requestAnimationFrame(() => {
+      innerFrame = requestAnimationFrame(() => {
+        const currentScroller = scrollRef.current;
+        if (!currentScroller) return;
+        currentScroller.scrollLeft = Math.max(0, (currentScroller.scrollWidth - currentScroller.clientWidth) / 2);
+        currentScroller.scrollTop = Math.max(0, (currentScroller.scrollHeight - currentScroller.clientHeight) / 2);
+      });
+    });
+    return () => {
+      cancelAnimationFrame(outerFrame);
+      if (innerFrame) cancelAnimationFrame(innerFrame);
+    };
+  }, [asset, current]);
 
   function fitImageToViewport() {
     const scroller = scrollRef.current;
@@ -900,10 +977,107 @@ export default function Home() {
       else incoming.push({ id: `${uploadId}-${index}`, name: file.name, src, local: true, byteSize: file.size });
     });
     setAssets((items) => [...incoming, ...items.map((item) => replacements.get(item.id) ?? item)]);
+    // Decodifica tudo em segundo plano e registra as dimensões antes da navegação do usuário.
+    // Assim, a troca de imagens não precisa esperar o carregamento do arquivo selecionado.
+    const addedAssets = [...incoming, ...replacements.values()];
+    void Promise.all(addedAssets.map(async (item) => ({ id: item.id, dimensions: await readImageDimensions(item.src) }))).then((resolved) => {
+      const dimensionsById = new Map(resolved.filter((item) => item.dimensions).map((item) => [item.id, item.dimensions!]));
+      if (!dimensionsById.size) return;
+      setAssets((items) => items.map((item) => {
+        const dimensions = dimensionsById.get(item.id);
+        return dimensions ? { ...item, ...dimensions } : item;
+      }));
+    });
     const nextCurrent = replacements.values().next().value?.id ?? incoming[0]?.id;
     if (nextCurrent) setCurrent(nextCurrent);
     setSaved(false); setLeftOpen(false);
     if (replacements.size) showToast(`${replacements.size} ${copy.projectImagesRestored}`);
+  }
+
+  function toggleAssetSelection(id: string) {
+    setSelectedAssetIds((items) => items.includes(id) ? items.filter((item) => item !== id) : [...items, id]);
+  }
+
+  function deleteSelectedImages() {
+    const ids = selectedAssetIds.length ? selectedAssetIds : asset ? [asset.id] : [];
+    if (!ids.length) return;
+    const names = assets.filter((item) => ids.includes(item.id));
+    const annotationCount = annotations.filter((annotation) => ids.includes(annotation.asset)).length;
+    if (!window.confirm(`${copy.confirmDelete}: ${names.length} imagem(ns)${annotationCount ? ` · ${annotationCount} ${copy.projectAnnotations}` : ""}?`)) return;
+    names.forEach((item) => { if (item.src.startsWith("blob:")) URL.revokeObjectURL(item.src); });
+    const remaining = assets.filter((item) => !ids.includes(item.id));
+    setAssets(remaining);
+    setAnnotations((items) => items.filter((annotation) => !ids.includes(annotation.asset)));
+    setHiddenAnnotations((items) => items.filter((id) => !annotations.some((annotation) => annotation.id === id && ids.includes(annotation.asset))));
+    setSelectedAssetIds([]); setCurrent(remaining[0]?.id ?? "");
+    setSelected(null); setMultiSelected([]); setSelectedVertex(null); resetDrafts(); setSaved(false);
+  }
+
+  async function importCocoAnnotations(file: File) {
+    type CocoImage = { id?: number; file_name?: string; width?: number; height?: number };
+    type CocoCategory = { id?: number; name?: string };
+    type CocoAnnotation = { image_id?: number; category_id?: number; bbox?: number[]; segmentation?: unknown };
+    try {
+      const data = JSON.parse(await file.text()) as { images?: CocoImage[]; categories?: CocoCategory[]; annotations?: CocoAnnotation[] };
+      if (!Array.isArray(data.images) || !Array.isArray(data.annotations)) throw new Error();
+      const assetByName = new Map(assets.map((item) => [item.name.split(/[\\/]/).at(-1)!.toLocaleLowerCase(), item]));
+      const images = new Map(data.images.filter((item) => typeof item.id === "number" && typeof item.file_name === "string")
+        .map((item) => [item.id!, { ...item, asset: assetByName.get(item.file_name!.split(/[\\/]/).at(-1)!.toLocaleLowerCase()) }]));
+      // Registra as dimensões reais antes de inserir as máscaras. Sem isso, a troca de uma
+      // imagem ainda não visitada começava no aspect ratio padrão 1000×650 e deformava o
+      // SVG por um quadro até o onLoad da foto informar seu tamanho.
+      const dimensionsByAsset = new Map<string, { width: number; height: number }>();
+      images.forEach((image) => {
+        if (!image.asset) return;
+        const width = Number(image.width); const height = Number(image.height);
+        if (Number.isFinite(width) && width > 0 && Number.isFinite(height) && height > 0) {
+          dimensionsByAsset.set(image.asset.id, { width, height });
+        }
+      });
+      const categoryById = new Map((data.categories ?? []).filter((item) => typeof item.id === "number" && typeof item.name === "string")
+        .map((item) => [item.id!, item.name!.trim()]));
+      const nextLabels = [...labels];
+      const labelByCategory = new Map<number, string>();
+      categoryById.forEach((name, categoryId) => {
+        const existing = nextLabels.find((label) => label.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+        const label = existing ?? { id: makeId("label"), name, color: nextLabelColor(nextLabels), key: "" };
+        if (!existing) nextLabels.push(label);
+        labelByCategory.set(categoryId, label.id);
+      });
+      const imported: Annotation[] = [];
+      data.annotations.forEach((item) => {
+        const image = typeof item.image_id === "number" ? images.get(item.image_id) : undefined;
+        if (!image?.asset || !Array.isArray(item.bbox) || item.bbox.length < 4) return;
+        const [x, y, width, height] = item.bbox.map(Number);
+        if (![x, y, width, height].every(Number.isFinite)) return;
+        const sourceWidth = Number(image.width) || image.asset.width || 1000;
+        const sourceHeight = Number(image.height) || image.asset.height || 650;
+        const sx = 1000 / sourceWidth; const sy = 650 / sourceHeight;
+        const label = typeof item.category_id === "number" ? labelByCategory.get(item.category_id) ?? UNLABELED_ID : UNLABELED_ID;
+        // COCO permite vários anéis em uma annotation. O editor trabalha com um anel
+        // por polígono, então cada contorno válido vira sua própria anotação — assim uma
+        // parte principal no segundo anel não desaparece, como acontecia em 13.jpg.
+        const polygons = Array.isArray(item.segmentation)
+          ? item.segmentation.filter(Array.isArray).map((ring) => ring.map(Number))
+            .filter((ring) => ring.length >= 6 && ring.length % 2 === 0 && ring.every(Number.isFinite))
+          : [];
+        if (polygons.length) {
+          polygons.forEach((polygon) => imported.push({
+            id: makeId("coco"), asset: image.asset.id, label, type: "polygon",
+            pts: polygon.map((value, index) => value * (index % 2 ? sy : sx)),
+          }));
+        } else {
+          imported.push({ id: makeId("coco"), asset: image.asset.id, label, type: "box", x: x * sx, y: y * sy, w: width * sx, h: height * sy });
+        }
+      });
+      if (!imported.length) { showToast("Nenhuma anotação COCO corresponde às imagens carregadas."); return; }
+      setAssets((items) => items.map((item) => {
+        const dimensions = dimensionsByAsset.get(item.id);
+        return dimensions ? { ...item, ...dimensions } : item;
+      }));
+      setLabels(nextLabels); setAnnotations((items) => [...items, ...imported]); setSaved(false);
+      showToast(`${imported.length} anotações COCO carregadas.`);
+    } catch { showToast("Não foi possível ler o arquivo COCO JSON."); }
   }
 
   function addClass() {
@@ -1151,7 +1325,14 @@ export default function Home() {
   }
   function clearSam() { samRequestRef.current += 1; setSamPrompts([]); setSamPreview([]); setSamLoading(false); }
   function restartSam() { clearSam(); setSamPromptMode(1); showToast(copy.samRestarted); }
-  function chooseImage(id: string) { setCurrent(id); setSelected(null); setMultiSelected([]); setSelectedVertex(null); resetDrafts(); setLeftOpen(false); }
+  function chooseImage(id: string) {
+    const target = assets.find((item) => item.id === id);
+    if (!target) return;
+    const index = assets.findIndex((item) => item.id === id);
+    assets.slice(Math.max(0, index - 2), index + 3).forEach((item) => { if (!item.missing) warmImage(item.src); });
+    if (target.width && target.height) setZoom(zoomToFit(target));
+    setCurrent(id); setSelected(null); setMultiSelected([]); setSelectedVertex(null); resetDrafts(); setLeftOpen(false);
+  }
   function go(direction: number) {
     if (!assets.length) return;
     const index = Math.max(0, assets.findIndex((item) => item.id === current));
@@ -1203,12 +1384,13 @@ export default function Home() {
     <div className="workspace">
       <aside className={`assets ${leftOpen ? "open" : ""}`}>
         <div className="drawer-head"><b>{copy.images}</b><button onClick={() => setLeftOpen(false)}><X size={19} /></button></div>
-        <div className="aside-title"><span>{copy.images} <b>{assets.length}</b></span><button onClick={() => input.current?.click()}><Plus size={16} /></button></div>
+        <div className="aside-title"><span>{copy.images} <b>{assets.length}</b></span><div><button title={copy.importImages} aria-label={copy.importImages} onClick={() => input.current?.click()}><Plus size={16} /></button><button title="Selecionar todas as imagens" aria-label="Selecionar todas as imagens" disabled={!assets.length} onClick={() => { const ids = assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item) => item.id); setSelectedAssetIds((items) => ids.every((id) => items.includes(id)) ? items.filter((id) => !ids.includes(id)) : Array.from(new Set([...items, ...ids]))); }}><Check size={16} /></button><button title="Carregar anotações COCO" aria-label="Carregar anotações COCO" disabled={!assets.length} onClick={() => cocoInputRef.current?.click()}><FileText size={16} /></button><button title="Excluir imagens selecionadas" aria-label="Excluir imagens selecionadas" disabled={!asset && !selectedAssetIds.length} onClick={deleteSelectedImages}><Trash2 size={16} /></button></div></div>
         <input hidden ref={input} type="file" accept="image/*" multiple onChange={(event) => files(event.target.files)} />
+        <input hidden ref={cocoInputRef} type="file" accept="application/json,.json" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void importCocoAnnotations(file); }} />
         <button className="import" onClick={() => input.current?.click()}><ImagePlus size={16} /> {copy.importImages}</button>
         <label className="search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={copy.searchImage} /></label>
         <div className="progress"><div><span>{copy.progress}</span><b>{completed} {copy.of} {assets.length}</b></div><i><em style={{ width: `${assets.length ? completed / assets.length * 100 : 0}%` }} /></i></div>
-        <div className="asset-list">{assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item, index) => { const count = annotations.filter((annotation) => annotation.asset === item.id).length; return <button key={item.id} className={`${current === item.id ? "active" : ""} ${item.missing ? "missing" : ""}`} onClick={() => chooseImage(item.id)}><div className="thumb" style={{ backgroundImage: item.src ? `url(${item.src})` : "none" }}><span>{String(index + 1).padStart(2, "0")}</span>{count > 0 && <b>{count}</b>}</div><div><strong>{item.name}</strong><small>{item.missing ? copy.imageNotLoaded : item.width && item.height ? `${item.width} × ${item.height}` : copy.localImage}</small></div><i className={count ? "checked" : ""}>{count ? "✓" : ""}</i></button>; })}</div>
+        <div className="asset-list">{assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item, index) => { const count = annotations.filter((annotation) => annotation.asset === item.id).length; const isChecked = selectedAssetIds.includes(item.id); return <div key={item.id} className={`asset-row ${current === item.id ? "active" : ""} ${item.missing ? "missing" : ""}`}><button className={`asset-selector ${isChecked ? "selected" : ""}`} aria-label={`Selecionar imagem: ${item.name}`} aria-pressed={isChecked} onClick={() => toggleAssetSelection(item.id)}>{isChecked && <Check size={11} />}</button><button className="asset-main" onClick={() => chooseImage(item.id)}><div className="thumb" style={{ backgroundImage: item.src ? `url(${item.src})` : "none" }}><span>{String(index + 1).padStart(2, "0")}</span>{count > 0 && <b>{count}</b>}</div><div><strong>{item.name}</strong><small>{item.missing ? copy.imageNotLoaded : item.width && item.height ? `${item.width} × ${item.height}` : copy.localImage}</small></div><i className={count ? "checked" : ""}>{count ? "✓" : ""}</i></button></div>; })}</div>
         <div className="privacy"><ShieldCheck size={14} /> {copy.privacy}</div>
       </aside>
 
@@ -1223,19 +1405,19 @@ export default function Home() {
 
         <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const projectFile = Array.from(event.dataTransfer.files).find((file) => file.name.toLowerCase().endsWith(".epka")); if (projectFile) { if (saved || window.confirm(copy.replaceUnsavedProject)) void loadProjectFile(projectFile); } else files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onPointerMove={(event) => { zoomAnchorRef.current = { x: event.clientX, y: event.clientY }; }} onPointerLeave={() => { zoomAnchorRef.current = null; }}>{asset ? <div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
-          {asset.missing ? <div className="missing-image"><Images size={34} /><b>{asset.name}</b><p>{copy.imageMissingHint}</p><button onClick={() => input.current?.click()}><FolderOpen size={15} />{copy.reloadProjectImages}</button></div> : <img crossOrigin="anonymous" src={asset.src} alt={fill(copy.annotationImageAlt, { name: asset.name })} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (asset.width !== image.naturalWidth || asset.height !== image.naturalHeight) setAssets((items) => items.map((item) => item.id === asset.id ? { ...item, width: image.naturalWidth, height: image.naturalHeight } : item)); }} />}
-          <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onAuxClick={(event) => event.preventDefault()} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => { if (tool === "polygon") finishPolygon(); if (tool === "line") finishLine(); }}>
+          {asset.missing ? <div className="missing-image"><Images size={34} /><b>{asset.name}</b><p>{copy.imageMissingHint}</p><button onClick={() => input.current?.click()}><FolderOpen size={15} />{copy.reloadProjectImages}</button></div> : imageWindow.map((item) => <img key={item.id} className={item.id === asset.id && readyImageIds.includes(item.id) ? "image-current" : "image-preload"} crossOrigin="anonymous" src={item.src} alt={item.id === asset.id ? fill(copy.annotationImageAlt, { name: item.name }) : ""} aria-hidden={item.id === asset.id ? undefined : true} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (item.width !== image.naturalWidth || item.height !== image.naturalHeight) setAssets((items) => items.map((candidate) => candidate.id === item.id ? { ...candidate, width: image.naturalWidth, height: image.naturalHeight } : candidate)); void image.decode().then(() => setReadyImageIds((ids) => ids.includes(item.id) ? ids : [...ids, item.id]), () => setReadyImageIds((ids) => ids.includes(item.id) ? ids : [...ids, item.id])); }} />)}
+          {!asset.missing && imageIsReady && <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onAuxClick={(event) => event.preventDefault()} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => { if (tool === "polygon") finishPolygon(); if (tool === "line") finishLine(); }}>
             {visibleAnnotations.map((annotation) => {
               const label = getLabel(annotation.label);
               const isSelected = multiSelected.includes(annotation.id);
               if (annotation.type === "box") return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><rect x={annotation.x} y={annotation.y} width={annotation.w} height={annotation.h} fill={`${label.color}28`} stroke={label.color} strokeWidth={isSelected ? lineThickness + 2 : lineThickness} /><g transform={`translate(${annotation.x},${(annotation.y ?? 0) - 31})`}><rect width={Math.max(100, label.name.length * 10 + 25)} height="31" rx="5" fill={label.color} /><text x="12" y="21" fontSize="16" fontWeight="700" fill="#112018">{label.name}</text></g></g>;
-              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={`${tool === "select" ? "movable-annotation" : ""} ${tool === "reshape" && annotation.id === selected ? "reshape-target" : ""}`.trim()} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={pointsToSvg(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? lineThickness + 2 : lineThickness} />{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r={markerRadius * .5} strokeWidth={markerRadius * .22} />)}{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r={polygonHandleRadius(points.length / 2, handleScale)} fill="#fff" stroke={label.color} strokeWidth={polygonHandleRadius(points.length / 2, handleScale) * .42} /> : null)}</g>;
+              if (annotation.type === "polygon") return <g key={annotation.id}><polygon className={`${tool === "select" ? "movable-annotation" : ""} ${tool === "reshape" && annotation.id === selected ? "reshape-target" : ""}`.trim()} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={isSelected ? pointsToSvg(annotation.pts) : maskPreviewPoints(annotation.pts)} fill={`${label.color}30`} stroke={label.color} strokeWidth={isSelected ? lineThickness + 2 : lineThickness} />{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? []).map((midpoint) => <ellipse className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} rx={markerRadius * .5} ry={markerRadius * .5 * markerAspect} strokeWidth={markerRadius * .22} />)}{tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <ellipse className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} rx={polygonHandleRadius(handleScale)} ry={polygonHandleRadius(handleScale) * markerAspect} fill="#fff" stroke={label.color} strokeWidth={polygonHandleRadius(handleScale) * .42} /> : null)}</g>;
               if (annotation.type === "line") return <g key={annotation.id}>
                 {/* Traço invisível e largo: uma linha fina é alvo pequeno demais para o clique. */}
                 <polyline className={`line-hit ${tool === "select" ? "movable-annotation" : ""}`} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer} points={pointsToSvg(annotation.pts)} strokeWidth={Math.max(14, lineThickness + 12)} />
                 <polyline className="line-shape" points={pointsToSvg(annotation.pts)} stroke={label.color} strokeWidth={isSelected ? lineThickness + 2 : lineThickness} />
-                {tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? [], true).map((midpoint) => <circle className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} r={markerRadius * .5} strokeWidth={markerRadius * .22} />)}
-                {tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <circle className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} r={polygonHandleRadius(points.length / 2, handleScale)} fill="#fff" stroke={label.color} strokeWidth={polygonHandleRadius(points.length / 2, handleScale) * .42} /> : null)}
+                {tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && edgeMidpoints(annotation.pts ?? [], true).map((midpoint) => <ellipse className="edge-handle" onPointerDown={(event) => insertVertex(event, annotation, midpoint.edgeIndex, midpoint.x, midpoint.y)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={`edge-${midpoint.edgeIndex}`} cx={midpoint.x} cy={midpoint.y} rx={markerRadius * .5} ry={markerRadius * .5 * markerAspect} strokeWidth={markerRadius * .22} />)}
+                {tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <ellipse className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} rx={polygonHandleRadius(handleScale)} ry={polygonHandleRadius(handleScale) * markerAspect} fill="#fff" stroke={label.color} strokeWidth={polygonHandleRadius(handleScale) * .42} /> : null)}
               </g>;
               const pointRadius = markerRadius * (isSelected ? 1.32 : 1);
               return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><circle cx={annotation.x} cy={annotation.y} r={pointRadius} fill="#fff" stroke={label.color} strokeWidth={pointRadius * .42} /><circle cx={annotation.x} cy={annotation.y} r={pointRadius * .34} fill={label.color} /></g>;
@@ -1257,7 +1439,7 @@ export default function Home() {
             {snapGuide && <g className="snap-guide"><circle cx={snapGuide.x} cy={snapGuide.y} r={markerRadius * 2.2} strokeWidth={markerRadius * .3} /><line x1={snapGuide.x - markerRadius * 1.3} y1={snapGuide.y} x2={snapGuide.x + markerRadius * 1.3} y2={snapGuide.y} strokeWidth={markerRadius * .26} /><line x1={snapGuide.x} y1={snapGuide.y - markerRadius * 1.3} x2={snapGuide.x} y2={snapGuide.y + markerRadius * 1.3} strokeWidth={markerRadius * .26} /></g>}
             {tool === "sam" && samPreview.length >= 6 && <polygon className="sam-mask-preview" points={pointsToSvg(samPreview)} fill={`${getLabel(activeLabel).color}52`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="10 6" />}
             {tool === "sam" && samPrompts.map((prompt, index) => { const arm = markerRadius * .5; const bar = markerRadius * .34; return <g key={index} className={`sam-prompt ${prompt.label ? "positive" : "negative"}`}><circle cx={prompt.x} cy={prompt.y} r={markerRadius} strokeWidth={markerRadius * .4} /><line x1={prompt.x - arm} y1={prompt.y} x2={prompt.x + arm} y2={prompt.y} strokeWidth={bar} />{prompt.label === 1 && <line x1={prompt.x} y1={prompt.y - arm} x2={prompt.x} y2={prompt.y + arm} strokeWidth={bar} />}</g>; })}
-          </svg>
+          </svg>}
           {tool === "polygon" && polygonDraft.length > 0 && <div className="tip">{copy.polygonFinish}</div>}
           {tool === "line" && <div className="tip">{lineDraft.length ? copy.lineFinish : copy.lineStart}</div>}
           {tool === "freehand" && <div className="tip">{freehandDrawing ? copy.freehandFinish : copy.freehandStart}</div>}
@@ -1275,7 +1457,7 @@ export default function Home() {
         <div className="tabs"><button className={!quality ? "active" : ""} onClick={() => setQuality(false)}>{copy.annotations}</button><button className={quality ? "active" : ""} onClick={() => setQuality(true)}>{copy.quality} <b>{currentAnnotations.length ? 1 : 0}</b></button></div>
         {!quality ? <div className="annotation-editor"><section className="annotation-panel-head"><div><b>{copy.annotations} · {currentAnnotations.length}</b><span>{copy.annotationPanelHint}</span></div><div className="annotation-panel-actions"><button disabled={!currentPolygonIds.length} onClick={toggleAllCurrentPolygons}><Check size={13} />{allCurrentPolygonsSelected ? copy.clearPolygonSelection : copy.selectAllPolygons}</button><button onClick={() => { setSelectedClassIds([]); setNewLabelColor(nextLabelColor(labels)); setClassManagerOpen(true); }}><Palette size={14} />{copy.manageClasses}</button></div></section>
           {selectedIds.length > 0 && <section className="batch-class"><div><Tags size={14} /><span><b>{selectedIds.length} {copy.batchSelection}</b><small>{copy.changeClass}</small></span></div><div><select aria-label={copy.changeClass} value={resolvedBatchLabel} onChange={(event) => setBatchLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.id === UNLABELED_ID ? copy.unlabeled : label.name}</option>)}</select><button onClick={reclassifySelection}>{copy.applyClass}</button><button className="batch-delete" onClick={() => setPendingDeleteAnnotationIds(selectedIds)}><Trash2 size={13} />{copy.deleteSelectedAnnotations}</button></div></section>}
-          <div className="instances">{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); const isChecked = multiSelected.includes(annotation.id); return <div key={annotation.id} className={`instance-row ${isChecked ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className={`annotation-selector ${isChecked ? "selected" : ""}`} aria-label={`${copy.selectAnnotation}: ${annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} #${index + 1}`} aria-pressed={isChecked} onClick={() => { toggleMultiSelection(annotation.id); setTool("select"); }}>{isChecked && <Check size={11} />}</button><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); setBatchLabel(annotation.label); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : annotation.type === "line" ? "╱" : ""}</i><span>{annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button></div>; })}</div>
+          <div className="instances">{currentAnnotations.map((annotation, index) => { const label = getLabel(annotation.label); const isHidden = hiddenAnnotations.includes(annotation.id) || hiddenLabels.includes(annotation.label); const isChecked = multiSelected.includes(annotation.id); return <div key={annotation.id} className={`instance-row ${isChecked ? "active" : ""} ${isHidden ? "hidden" : ""}`}><button className={`annotation-selector ${isChecked ? "selected" : ""}`} aria-label={`${copy.selectAnnotation}: ${annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} #${index + 1}`} aria-pressed={isChecked} onClick={() => { toggleMultiSelection(annotation.id); setTool("select"); }}>{isChecked && <Check size={11} />}</button><button className="instance-main" onClick={(event) => { if (event.shiftKey) toggleMultiSelection(annotation.id); else { setSelected(annotation.id); setMultiSelected([annotation.id]); setBatchLabel(annotation.label); } setSelectedVertex(null); setTool("select"); }}><i style={{ borderColor: label.color }}>{annotation.type === "point" ? "•" : annotation.type === "line" ? "╱" : ""}</i><span>{annotation.label === UNLABELED_ID ? copy.unlabeled : label.name} <small>#{index + 1}</small></span></button><button className="visibility-toggle" title={isHidden ? copy.showAnnotation : copy.hideAnnotation} aria-label={`${isHidden ? copy.showAnnotation : copy.hideAnnotation}: ${label.name} #${index + 1}`} onClick={() => toggleAnnotationVisibility(annotation.id)}>{isHidden ? <EyeOff size={14} /> : <Eye size={14} />}</button><button className="delete-annotation" title={copy.deleteShape} aria-label={`${copy.deleteShape}: ${label.name} #${index + 1}`} onClick={() => setPendingDeleteAnnotationIds([annotation.id])}><Trash2 size={13} /></button></div>; })}</div>
         </div> : <div className="quality"><div className="score"><strong>92<small>/100</small></strong><span>{copy.goodConsistency}</span></div><article className="warn"><b>!</b><div><strong>{copy.possibleOverlap}</strong><p>{copy.overlapText}</p></div></article><article><b>✓</b><div><strong>{copy.validClasses}</strong><p>{copy.validClassesText}</p></div></article><article><b>✓</b><div><strong>{copy.noEmpty}</strong><p>{copy.noEmptyText}</p></div></article><button onClick={() => { setQuality(false); setSelected(visibleAnnotations[0]?.id ?? null); setMultiSelected(visibleAnnotations[0] ? [visibleAnnotations[0].id] : []); }}>{copy.review}</button></div>}
         <div className="hint"><b>{activeAnnotation?.type === "polygon" ? copy.vectorEditing : copy.quickTip}</b><p>{activeAnnotation?.type === "polygon" ? copy.vectorHint : copy.shortcutHint}</p></div>
       </aside>
