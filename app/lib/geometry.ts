@@ -211,10 +211,6 @@ export function snapPointToPolygons(
   return best;
 }
 
-function openPathSimplify(points: Array<[number, number]>, tolerance: number) {
-  return rdp(points, tolerance);
-}
-
 function ringArc(vertices: Array<[number, number]>, start: number, end: number) {
   const result: Array<[number, number]> = [vertices[start]];
   let index = start;
@@ -244,7 +240,7 @@ function segmentIntersection(
   const abx = b[0] - a[0]; const aby = b[1] - a[1];
   const cdx = d[0] - c[0]; const cdy = d[1] - c[1];
   const denominator = abx * cdy - aby * cdx;
-  if (Math.abs(denominator) < 1e-8) return null;
+  if (denominator === 0) return null;
   const acx = c[0] - a[0]; const acy = c[1] - a[1];
   const pathT = (acx * cdy - acy * cdx) / denominator;
   const edgeT = (acx * aby - acy * abx) / denominator;
@@ -277,7 +273,9 @@ export function reshapePolygon(points: number[], path: number[]): ReshapeResult 
     for (let edge = 0; edge < ring.length; edge += 1) {
       const hit = segmentIntersection(trace[pathSegment], trace[pathSegment + 1], ring[edge], ring[(edge + 1) % ring.length]);
       if (!hit) continue;
-      const duplicate = intersections.some((item) => Math.hypot(item.point[0] - hit.x, item.point[1] - hit.y) < 1);
+      // Só a mesma interseção é duplicada (por exemplo, em um vértice compartilhado).
+      // Pontos próximos continuam distintos: esta ferramenta trabalha na coordenada exata.
+      const duplicate = intersections.some((item) => item.point[0] === hit.x && item.point[1] === hit.y);
       if (!duplicate) intersections.push({ pathSegment, pathT: hit.pathT, edge, edgeT: hit.edgeT, point: [hit.x, hit.y] });
     }
   }
@@ -285,14 +283,16 @@ export function reshapePolygon(points: number[], path: number[]): ReshapeResult 
   if (intersections.length < 2) return { points: null, mode, reason: "crossings" };
   const first = intersections[0];
   const last = intersections.at(-1)!;
-  if (Math.hypot(first.point[0] - last.point[0], first.point[1] - last.point[1]) < 2) {
+  if (first.point[0] === last.point[0] && first.point[1] === last.point[1]) {
     return { points: null, mode, reason: "crossings" };
   }
 
   const traceSection: Array<[number, number]> = [first.point];
   for (let index = first.pathSegment + 1; index <= last.pathSegment; index += 1) traceSection.push(trace[index]);
   traceSection.push(last.point);
-  const simplifiedTrace = openPathSimplify(traceSection, 2.2);
+  // Não simplifique o traço de remodelagem: cada ponto capturado pode definir uma borda
+  // de um pixel e a simplificação introduziria uma tolerância que muda o resultado.
+  const simplifiedTrace = traceSection;
 
   const insertions = new Map<number, Array<{ endpoint: number; t: number; point: [number, number] }>>();
   [first, last].forEach((hit, endpoint) => {
@@ -304,7 +304,7 @@ export function reshapePolygon(points: number[], path: number[]): ReshapeResult 
   ring.forEach((vertex, edge) => {
     augmented.push(vertex);
     for (const insertion of (insertions.get(edge) ?? []).sort((a, b) => a.t - b.t)) {
-      if (insertion.t > 0.001 && insertion.t < 0.999) augmented.push(insertion.point);
+      if (insertion.t > 0 && insertion.t < 1) augmented.push(insertion.point);
     }
   });
   const endpointIndices = [first.point, last.point].map((target) => augmented.reduce((best, vertex, index) =>
@@ -322,15 +322,14 @@ export function reshapePolygon(points: number[], path: number[]): ReshapeResult 
     [...forward, ...simplifiedTrace.slice(1, -1).reverse()],
   ].map((candidate) => candidate.filter((point, index) => {
     const previous = candidate[(index - 1 + candidate.length) % candidate.length];
-    return Math.hypot(point[0] - previous[0], point[1] - previous[1]) >= 1;
+    return point[0] !== previous[0] || point[1] !== previous[1];
   })).filter((candidate) => candidate.length >= 3);
   if (!candidates.length) return { points: null, mode, reason: "crossings" };
 
   const originalArea = polygonArea(points);
-  const minimumChange = Math.max(12, originalArea * 0.0001);
   const directionalCandidates = candidates.filter((candidate) => {
     const area = polygonArea(candidate.flat());
-    return mode === "add" ? area > originalArea + minimumChange : area < originalArea - minimumChange;
+    return mode === "add" ? area > originalArea : area < originalArea;
   });
   if (!directionalCandidates.length) return { points: null, mode, reason: "direction" };
   const selectedCandidate = directionalCandidates.reduce((best, candidate) => {
