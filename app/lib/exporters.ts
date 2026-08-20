@@ -79,7 +79,7 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
   downloadBlob(
     "epiaka-coco.json",
     new Blob(
-      [JSON.stringify({ info: { description: "Epiaka dataset", version: "1.0" }, images, categories, annotations: cocoAnnotations }, null, 2)],
+      [JSON.stringify({ info: { description: "poligome.com dataset", version: "1.0" }, images, categories, annotations: cocoAnnotations }, null, 2)],
       { type: "application/json;charset=utf-8" },
     ),
   );

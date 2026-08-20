@@ -132,8 +132,8 @@ html[data-theme="light"]{--ink:#111614;--muted:#55635C;--line:#D5DED8;--green:#1
 .project-pop>button:disabled{opacity:.45;cursor:default}
 .project-pop>button:disabled:hover{background:transparent}
 
-/* ---- Lockup Epiaka no cabecalho e na tela de carregamento ---- */
-.brand-lockup{display:flex;align-items:center;gap:6px;color:var(--ink);flex:none}
+/* ---- Lockup Poligome no cabeçalho e na tela de carregamento ---- */
+.brand-lockup{display:flex;align-items:center;gap:7px;color:var(--green);flex:none}.brand-lockup strong{font-size:clamp(17px,1.8vw,23px);font-weight:800;letter-spacing:-.07em;line-height:1;color:var(--ink)}.brand-lockup strong span{color:var(--green);font-weight:700}
 .brand-lockup svg{display:block;overflow:visible}
 .loading-card{gap:0}
 
@@ -207,3 +207,8 @@ body:has(.landing){overflow:auto}
   .landing-hero{padding:38px 0 30px}
   .landing-langs{width:100%;justify-content:center;border-radius:12px}
 }
+
+/* Identidade Poligome: violeta geométrico com contraste preservado em ambos os temas. */
+html,html[data-theme="dark"]{--green:#7C5CFC;--lime:#C8B8FF;--tool-active-bg:#282244;--tool-active-ink:#9D88FF;--tool-active-border:#4E3CAF;--btn-accent-ink:#C8B8FF}
+html[data-theme="light"]{--green:#5D43D8;--lime:#412EAD;--tool-active-bg:#ECE8FF;--tool-active-ink:#412EAD;--tool-active-border:#C8BEFF;--btn-accent-ink:#5D43D8}
+@media(prefers-color-scheme:light){html[data-theme="system"]{--green:#5D43D8;--lime:#412EAD;--tool-active-bg:#ECE8FF;--tool-active-ink:#412EAD;--tool-active-border:#C8BEFF;--btn-accent-ink:#5D43D8}}

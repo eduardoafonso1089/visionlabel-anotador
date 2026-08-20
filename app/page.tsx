@@ -5,27 +5,14 @@ import { useEffect, useState } from "react";
 import { getCopy, storedLanguage, storedTheme } from "./lib/i18n";
 import type { Language } from "./lib/i18n";
 
-// O lockup vive em contornos para não depender de fonte instalada; a tinta herda
-// currentColor, então o mesmo desenho serve nos dois temas.
+// Símbolo geométrico nativo da marca; o texto segue a fonte já carregada pelo app.
 function BrandLockup({ height = 34 }: { height?: number }) {
-  return <span className="brand-lockup" role="img" aria-label="Epiaka">
-    <svg viewBox="-24.5 -108.4 130.9 209.2" height={height} aria-hidden="true">
-      <g fill="none" stroke="currentColor" strokeWidth="8.2" strokeLinecap="round">
-        <path d="M0 -98.3V90.7" /><path d="M0 0 96.3 -76.3" /><path d="M0 0 96.3 79.3" />
-      </g>
-      <circle r="18.5" fill="#44C995" />
+  return <span className="brand-lockup" role="img" aria-label="poligome.com">
+    <svg viewBox="0 0 40 40" height={height} aria-hidden="true">
+      <path d="M20 2 35 11v18L20 38 5 29V11z" fill="currentColor" />
+      <path d="m14 13 12 7-12 7z" fill="var(--surface)" />
     </svg>
-    <svg viewBox="-2 -106 420 136" height={height * .63} aria-hidden="true">
-      <g fill="none" stroke="currentColor" strokeWidth="15">
-        <path d="M7.5 -100V0" /><path d="M7.5 -92.5H60" /><path d="M7.5 -50H53" /><path d="M7.5 -7.5H60" />
-        <path d="M85.5 -73V28" /><circle cx="114.5" cy="-36.5" r="29" />
-        <path d="M169.5 -73V0" />
-        <circle cx="224.5" cy="-36.5" r="29" /><path d="M253.5 -73V0" />
-        <path d="M279.5 -100V0" /><path d="M279.5 -32 320 -73" /><path d="M279.5 -32 324 0" />
-        <circle cx="379" cy="-36.5" r="29" /><path d="M408 -73V0" />
-      </g>
-      <circle cx="169.5" cy="-95" r="9" fill="currentColor" />
-    </svg>
+    <strong>poligome<span>.com</span></strong>
   </span>;
 }
 
