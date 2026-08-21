@@ -29,7 +29,7 @@
 
 /* QGIS-inspired transform, reshape and snapping tools */
 .stage.reshape svg{cursor:url("/reshape-cursor.svg") 4 28,crosshair}.stage.transform svg{cursor:default}
-.reshape-line{fill:none;stroke:#69B7FF;stroke-width:5;stroke-dasharray:10 6;stroke-linecap:round;stroke-linejoin:round;pointer-events:none}
+.reshape-line{fill:none;stroke:#69B7FF;stroke-width:5;stroke-linecap:round;stroke-linejoin:round;vector-effect:non-scaling-stroke;pointer-events:none}
 .reshape-endpoint{fill:#FFFFFF;stroke:#69B7FF;pointer-events:none}
 .transform-overlay rect{fill:none;stroke:#F2F5F3;stroke-width:3;stroke-dasharray:9 6;pointer-events:none}
 .transform-overlay line{stroke:#F2F5F3;stroke-width:3;stroke-dasharray:7 5;pointer-events:none}
@@ -45,7 +45,7 @@
 /* Exceção: as alças pertencem à própria ferramenta Transformar, então mantêm o cursor delas. */
 .stage.transform .transform-handle.rotate-handle{cursor:grab}
 .stage.transform .transform-handle.scale-handle{cursor:nwse-resize}
-.reshape-target{stroke-dasharray:11 6}
+.reshape-target{stroke-dasharray:none}
 .selection-marquee{fill:rgba(108,140,255,.14);stroke:#6c8cff;stroke-width:3;stroke-dasharray:9 6;pointer-events:none}
 .polygon-close-point{cursor:pointer;filter:drop-shadow(0 0 5px rgba(255,255,255,.9))}
 
@@ -67,7 +67,8 @@ html[data-theme="light"]{--ink:#111614;--muted:#55635C;--line:#D5DED8;--green:#1
 /* Project menu, middle-button pan and iterative labels */
 .project-switcher{position:relative;min-width:0}.project.open svg{transform:rotate(180deg)}.project svg{transition:transform .16s}.project-pop{position:absolute;z-index:85;left:0;top:43px;width:290px;padding:9px;background:var(--surface);border:1px solid var(--line);border-radius:12px;box-shadow:0 16px 42px rgba(20,38,27,.2)}.project-pop>p{margin:0;padding:6px 8px;font-size:11px;letter-spacing:.1em;text-transform:uppercase;color:var(--muted);font-weight:750}.project-summary{padding:10px;border-radius:9px;background:var(--surface-soft);margin-bottom:5px}.project-summary span{display:flex;align-items:center;gap:7px;font-size:13px;font-weight:700}.project-summary span em{width:7px;height:7px;border-radius:50%;background:var(--green)}.project-summary small{display:block;margin:4px 0 0 14px;color:var(--muted);font-size:11px}.project-pop>button{width:100%;min-height:45px;border:0;background:transparent;border-radius:8px;padding:7px 9px;display:flex;align-items:center;gap:9px;text-align:left;cursor:pointer}.project-pop>button:hover{background:var(--theme-hover)}.project-pop>button>span{min-width:0}.project-pop>button b,.project-pop>button small{display:block}.project-pop>button b{font-size:12px}.project-pop>button small{max-width:260px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;margin-top:2px;font-size:10px;color:var(--muted)}.project-rename{display:grid;grid-template-columns:minmax(0,1fr) auto;gap:6px;padding:6px}.project-rename input{min-width:0;height:35px;border:1px solid var(--line);border-radius:8px;background:var(--control-bg);padding:0 9px;outline:0}.project-rename button{border:0;border-radius:8px;background:var(--green);color:var(--on-brand);display:flex;align-items:center;gap:5px;padding:0 10px;font-size:11px;cursor:pointer}
 .stage.panning svg{cursor:grabbing!important}.stage.panning .canvas{user-select:none}
-.coordinate-guide line{stroke:var(--green);stroke-width:1.2;stroke-dasharray:5 5;opacity:.88}.coordinate-guide rect{fill:rgba(17,22,20,.88);stroke:var(--green);stroke-width:1}.coordinate-guide text{fill:#fff;font-family:var(--mono),monospace;font-size:11px;font-weight:700}
+.coordinate-guide line{stroke:var(--green);stroke-width:1;stroke-dasharray:4 5;vector-effect:non-scaling-stroke;opacity:.72}.coordinate-guide rect{fill:rgba(17,22,20,.88);stroke:var(--green);stroke-width:.8;vector-effect:non-scaling-stroke}.coordinate-guide text{fill:#fff;font-family:var(--mono),monospace;font-size:10px;font-weight:700}
+.coordinate-guide.obscured>g{opacity:.18}
 
 /* Estados semânticos: o texto nunca depende de uma cor auxiliar sobre um fundo de alerta. */
 html{--notice-bg:#252039;--notice-border:#6554B9;--notice-ink:#F4F1FF;--overlay:rgba(13,11,20,.52);--tooltip-bg:#211C32;--tooltip-ink:#F4F1FF;--thumb-overlay:rgba(13,11,20,.78)}
@@ -230,3 +231,6 @@ html[data-theme="light"]{--green:#5D43D8;--lime:#412EAD;--tool-active-bg:#ECE8FF
 
 /* Mantém a janela de navegação pronta no DOM; somente o quadro selecionado é visível. */
 .canvas>img{position:absolute;inset:0}.canvas>img.image-preload{visibility:hidden;pointer-events:none}.canvas>img.image-current{visibility:visible}
+
+/* A linha de corte é contínua, como as demais ferramentas de traçado. */
+.split-line{stroke-dasharray:none;stroke-linecap:round;vector-effect:non-scaling-stroke}
