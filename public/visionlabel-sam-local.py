@@ -795,6 +795,21 @@ class LoadRequest(BaseModel):
     model_id: str
 
 
+def _persist_selection(spec: ModelSpec) -> None:
+    """Grava o modelo escolhido para que serviço e iniciadores subam o mesmo.
+
+    Sem isso, uma troca feita pela interface seria esquecida no próximo arranque.
+    """
+    target = _app_dir / "selected-model.txt"
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        partial = target.with_suffix(".txt.part")
+        partial.write_text(f"{spec.model_id}\n", encoding="utf-8")
+        partial.replace(target)
+    except OSError as error:  # a troca continua valendo, mas o próximo boot não herda
+        print(f"Aviso: não foi possível salvar a seleção: {error}", flush=True)
+
+
 def _exec_with_model(spec: ModelSpec, port: int) -> None:
     """Substitui este processo pelo mesmo conector no venv da familia pedida.
 
@@ -857,6 +872,7 @@ def load(payload: LoadRequest):
             )
         _switch_target = spec.model_id
 
+    _persist_selection(spec)
     _update_runtime(status="loading", error=None)
     # A resposta precisa sair antes do execv, senao o cliente perde a conexao.
     threading.Timer(

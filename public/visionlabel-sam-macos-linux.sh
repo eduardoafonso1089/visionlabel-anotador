@@ -6,7 +6,7 @@ VISIONLABEL_SAM_INSTALLER_API=2
 DEFAULT_SITE_URL="https://visionlabel-anotador.eduardo1089.chatgpt.site"
 DEFAULT_ASSET_BASE_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/main/public"
 DEFAULT_CONNECTOR_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/visionlabel-sam-local.py"
-DEFAULT_CONNECTOR_SHA256="2b7a75bec318cf3c785913c00d53075710012f0944af40de68a0b9a6e4ac67dd"
+DEFAULT_CONNECTOR_SHA256="06e4cbeff322eaaefa0ea1a4b779eb8e754bf74ca9e357afb30e50b8450e5207"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SITE_URL="${VISIONLABEL_SITE_URL:-${DEFAULT_SITE_URL}}"
 SITE_URL="${SITE_URL%/}"
@@ -396,6 +396,20 @@ check_platform() {
     Linux|Darwin) ;;
     *) fail "sistema não suportado por este instalador: ${OS_NAME}" ;;
   esac
+
+  if [[ "$OS_NAME" == "Darwin" ]]; then
+    # O PyTorch 2.5.1+ publica wheels de macOS apenas para arm64: em Macs Intel
+    # o pip falharia com "no matching distribution" no meio da instalação.
+    local arch
+    arch="$(uname -m)"
+    [[ "$arch" == "arm64" ]] ||
+      fail "no macOS, o SAM 2.1 exige um Mac Apple Silicon: o PyTorch 2.5.1+ não publica mais wheels para Intel (${arch}). Use Linux, ou um Mac M1 ou mais novo."
+    local macos_major
+    macos_major="$(sw_vers -productVersion 2>/dev/null | cut -d. -f1)"
+    if [[ "$macos_major" =~ ^[0-9]+$ ]] && (( macos_major < 14 )); then
+      fail "no macOS, o PyTorch atual exige macOS 14 ou mais novo; esta máquina roda ${macos_major}. Atualize o sistema ou use Linux."
+    fi
+  fi
 
   if [[ "$MODEL_ID" == "sam3-concepts" ]]; then
     if [[ "$OS_NAME" == "Darwin" ]]; then

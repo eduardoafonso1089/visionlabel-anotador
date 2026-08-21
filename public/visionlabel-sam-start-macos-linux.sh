@@ -250,6 +250,9 @@ validate_platform() {
     Linux|Darwin) ;;
     *) fail "sistema não suportado por este iniciador: ${os_name}" ;;
   esac
+  if [[ "$os_name" == "Darwin" && "$(uname -m)" != "arm64" ]]; then
+    fail "no macOS, o SAM 2.1 exige um Mac Apple Silicon; o PyTorch atual não publica wheels para Intel."
+  fi
   if [[ "$MODEL_ID" == "sam3-concepts" ]]; then
     [[ "$os_name" == "Linux" ]] ||
       fail "SAM 3 não é disponibilizado no macOS; selecione um modelo SAM 2.1."
