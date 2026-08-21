@@ -78,12 +78,12 @@ type TransformDrag = {
 
 // Símbolo geométrico nativo da marca; o texto segue a fonte já carregada pelo app.
 function BrandLockup({ height = 30 }: { height?: number }) {
-  return <span className="brand-lockup" role="img" aria-label="poligome.com">
+  return <span className="brand-lockup" role="img" aria-label="Poligome">
     <svg viewBox="0 0 40 40" height={height} aria-hidden="true">
       <path d="M20 2 35 11v18L20 38 5 29V11z" fill="currentColor" />
       <path d="m14 13 12 7-12 7z" fill="var(--surface)" />
     </svg>
-    <strong>poligome<span>.com</span></strong>
+    <strong>Poligome</strong>
   </span>;
 }
 
@@ -1434,7 +1434,7 @@ export default function Home() {
       <div className="topbar-main">
       <div className="brand-side">
         <button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button>
-        <BrandLockup height={28} /><i />
+        <a className="brand-home" href="/" aria-label="Ir para a página inicial"><BrandLockup height={28} /></a><i />
         {projectEditing
           ? <input className="project-name-input" ref={projectInputRef} value={projectNameDraft}
               aria-label={copy.renameProject} maxLength={80}
@@ -1460,7 +1460,7 @@ export default function Home() {
               <p>{copy.exportFormat}</p>
               <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("coco")}><FileText size={14} /><span><b>COCO JSON</b><small>{copy.cocoDesc}</small></span></button>
               <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("yolo")}><HardDriveDownload size={14} /><span><b>YOLO ZIP</b><small>{copy.yoloDesc}</small></span></button>
-              <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("project")}><Download size={14} /><span><b>poligome.com</b><small>{copy.projectBackup}</small></span></button>
+              <button role="menuitem" disabled={exporting || projectBusy} onClick={() => void exportData("project")}><Download size={14} /><span><b>Poligome</b><small>{copy.projectBackup}</small></span></button>
               <i className="menu-separator" />
               <button role="menuitem" onClick={() => { setProjectOpen(false); setPreferencesOpen(true); }}><Settings2 size={14} /><span><b>{copy.preferences}</b><small>{copy.appearance} · {copy.language}</small></span></button>
           </div>}
@@ -1548,7 +1548,7 @@ export default function Home() {
       </section>
 
       <aside className={`labels ${rightOpen ? "open" : ""}`}>
-        <div className="drawer-head"><b>{copy.annotations} · {copy.quality}</b><button onClick={() => setRightOpen(false)}><X size={19} /></button></div>
+        <div className="drawer-head"><b>{copy.annotations}</b><button onClick={() => setRightOpen(false)}><X size={19} /></button></div>
         <div className="tabs"><button className={!quality ? "active" : ""} onClick={() => setQuality(false)}>{copy.annotations}</button><button className={quality ? "active" : ""} onClick={() => setQuality(true)}>{copy.quality} <b>{currentAnnotations.length ? 1 : 0}</b></button></div>
         {!quality ? <div className="annotation-editor"><section className="annotation-panel-head"><div><b>{copy.annotations} · {currentAnnotations.length}</b><span>{copy.annotationPanelHint}</span></div><div className="annotation-panel-actions"><button disabled={!currentPolygonIds.length} onClick={toggleAllCurrentPolygons}><Check size={13} />{allCurrentPolygonsSelected ? copy.clearPolygonSelection : copy.selectAllPolygons}</button><button onClick={() => { setSelectedClassIds([]); setNewLabelColor(nextLabelColor(labels)); setClassManagerOpen(true); }}><Palette size={14} />{copy.manageClasses}</button></div></section>
           {selectedIds.length > 0 && <section className="batch-class"><div><Tags size={14} /><span><b>{selectedIds.length} {copy.batchSelection}</b><small>{copy.changeClass}</small></span></div><div><select aria-label={copy.changeClass} value={resolvedBatchLabel} onChange={(event) => setBatchLabel(event.target.value)}>{labels.map((label) => <option key={label.id} value={label.id}>{label.id === UNLABELED_ID ? copy.unlabeled : label.name}</option>)}</select><button onClick={reclassifySelection}>{copy.applyClass}</button><button className="batch-delete" onClick={() => setPendingDeleteAnnotationIds(selectedIds)}><Trash2 size={13} />{copy.deleteSelectedAnnotations}</button></div></section>}
