@@ -252,3 +252,6 @@ html[data-theme="light"]{--ink:#29262F;--muted:#6E6A75;--line:#DEDCE4;--green:#7
 
 .landing-cta.secondary{background:var(--surface);color:var(--btn-accent-ink);border:1px solid var(--tool-active-border)}.landing-projects{width:min(880px,calc(100% - 32px));margin:8px auto 58px;display:grid;grid-template-columns:1fr 1fr;gap:12px}.landing-projects a{min-height:90px;padding:17px;border:1px solid var(--line);border-radius:12px;background:var(--surface);color:var(--ink);text-decoration:none;display:flex;align-items:center;gap:11px}.landing-projects a>svg{color:var(--green);flex:none}.landing-projects a>div{min-width:0;flex:1}.landing-projects b,.landing-projects span{display:block}.landing-projects b{font-size:13px}.landing-projects div span{margin-top:4px;color:var(--muted);font-size:11px;line-height:1.4}.landing-projects>a>span{color:var(--btn-accent-ink)}.landing-projects a:hover{border-color:var(--green);background:var(--tool-active-bg)}
 @media(max-width:560px){.landing-projects{grid-template-columns:1fr;margin-bottom:38px}.landing-actions{flex-wrap:wrap;justify-content:center}}
+
+/* A aplicação principal bloqueia a rolagem do body; a tela de texto tem seu próprio scroll. */
+.llm-shell{height:100vh;overflow:auto;overscroll-behavior:contain}

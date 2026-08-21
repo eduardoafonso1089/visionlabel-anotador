@@ -3,6 +3,7 @@
 import { ArrowLeft, ArrowRight, Check, Download, FileUp, Flag, FolderOpen, LockKeyhole, RotateCcw, Save, SkipForward, SlidersHorizontal, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 import { exportLlm, fieldsOf, openLlmProject, parseDataset, saveLlmProject, suggestedField, textValue } from "../lib/llm";
+import { storedTheme } from "../lib/i18n";
 import type { AnnotationMode, DatasetRow, LlmAnnotation, LlmProject, LlmSchema, RecordStatus } from "../lib/llm";
 
 const modes: Array<{ id: AnnotationMode; title: string; detail: string }> = [
@@ -26,6 +27,8 @@ export default function TextAnnotationPage() {
   const fields = useMemo(() => fieldsOf(rows), [rows]); const row = rows[index]; const note = row ? annotations[row.internalId] : undefined;
   const done = Object.values(annotations).filter((item) => item.status === "annotated").length;
 
+  // A rota também pode ser aberta diretamente, sem passar pela landing.
+  useEffect(() => { document.documentElement.dataset.theme = storedTheme(); document.documentElement.lang = "pt-BR"; }, []);
   useEffect(() => { if (rows.length) localStorage.setItem("poligome-llm-draft", JSON.stringify({ annotations, orders, index })); }, [annotations, orders, index, rows.length]);
   useEffect(() => { const keydown = (event: KeyboardEvent) => { if (step !== "work" || ["INPUT", "TEXTAREA", "SELECT"].includes((event.target as HTMLElement).tagName)) return; if (event.key === "ArrowRight") { event.preventDefault(); setIndex((value) => Math.min(rows.length - 1, value + 1)); } if (event.key === "ArrowLeft") { event.preventDefault(); setIndex((value) => Math.max(0, value - 1)); } if (schema.mode === "preference" && ["1", "2", "3"].includes(event.key)) choosePreference(event.key === "1" ? "A" : event.key === "3" ? "B" : "tie"); }; addEventListener("keydown", keydown); return () => removeEventListener("keydown", keydown); });
 
