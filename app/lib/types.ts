@@ -4,6 +4,7 @@ export type Tool =
   | "box"
   | "polygon"
   | "freehand"
+  | "line"
   | "point"
   | "sam"
   | "split"
@@ -33,7 +34,8 @@ export type Annotation = {
   instanceId?: string;
   asset: string;
   label: string;
-  type: "box" | "polygon" | "point";
+  // "line" é uma polilinha aberta: usa `pts` como o polígono, mas sem fechar o contorno.
+  type: "box" | "polygon" | "line" | "point";
   x?: number;
   y?: number;
   w?: number;

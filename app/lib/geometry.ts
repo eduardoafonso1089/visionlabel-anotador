@@ -38,10 +38,12 @@ export function insertPolygonVertex(points: number[], edgeIndex: number, x: numb
   ];
 }
 
-export function edgeMidpoints(points: number[]) {
+// `open` descarta a aresta de fechamento, para polilinhas não ganharem um ponto de inserção
+// entre o último e o primeiro vértice.
+export function edgeMidpoints(points: number[], open = false) {
   const result: Array<{ x: number; y: number; edgeIndex: number }> = [];
   if (points.length < 4) return result;
-  const limit = points.length === 4 ? 2 : points.length;
+  const limit = open ? points.length - 2 : points.length === 4 ? 2 : points.length;
   for (let index = 0; index < limit; index += 2) {
     const next = (index + 2) % points.length;
     if (Math.hypot(points[index] - points[next], points[index + 1] - points[next + 1]) < MIN_VERTEX_DISTANCE * 3) continue;
@@ -84,7 +86,7 @@ export function boundedAnnotationDelta(annotations: Annotation[], dx: number, dy
 }
 
 export function translateAnnotation(annotation: Annotation, dx: number, dy: number): Annotation {
-  if (annotation.type === "polygon") {
+  if (annotation.type === "polygon" || annotation.type === "line") {
     return {
       ...annotation,
       pts: (annotation.pts ?? []).map((coordinate, index) => coordinate + (index % 2 ? dy : dx)),
@@ -350,7 +352,7 @@ export function annotationBounds(annotation: Annotation) {
       height: annotation.h ?? 0,
     };
   }
-  if (annotation.type === "polygon") return polygonBounds(annotation.pts ?? []);
+  if (annotation.type === "polygon" || annotation.type === "line") return polygonBounds(annotation.pts ?? []);
   return {
     x: Math.max(0, (annotation.x ?? 0) - 4),
     y: Math.max(0, (annotation.y ?? 0) - 4),

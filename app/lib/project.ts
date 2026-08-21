@@ -1,5 +1,7 @@
 import JSZip from "jszip";
 import { downloadBlob } from "./exporters";
+import { fill } from "./i18n";
+import type { Copy } from "./i18n";
 import type { Annotation, Asset, Label } from "./types";
 
 type PortableAsset = Omit<Asset, "src" | "local"> & {
@@ -10,7 +12,7 @@ type PortableAsset = Omit<Asset, "src" | "local"> & {
 export type ProjectSaveMode = "annotations" | "complete";
 
 type ProjectManifest = {
-  format: "visionlabel-project";
+  format: "poligome-project";
   version: 2;
   project_name: string;
   saved_at: string;
@@ -19,7 +21,7 @@ type ProjectManifest = {
   annotations: Annotation[];
 };
 
-export type LoadedVisionLabelProject = {
+export type LoadedPoligomeProject = {
   projectName: string;
   assets: Asset[];
   labels: Label[];
@@ -30,7 +32,7 @@ export type LoadedVisionLabelProject = {
 
 function safeBaseName(name: string) {
   const normalized = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  return normalized.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "visionlabel-project";
+  return normalized.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "poligome-project";
 }
 
 function safeFileName(name: string, fallback: string) {
@@ -42,12 +44,12 @@ function isObject(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
 }
 
-function parseManifest(value: unknown): ProjectManifest {
-  if (!isObject(value) || value.format !== "visionlabel-project" || value.version !== 2) {
-    throw new Error("Formato de projeto não reconhecido.");
+function parseManifest(value: unknown, copy: Copy): ProjectManifest {
+  if (!isObject(value) || value.format !== "poligome-project" || value.version !== 2) {
+    throw new Error(copy.errProjectFormat);
   }
   if (typeof value.project_name !== "string" || !Array.isArray(value.assets) || !Array.isArray(value.labels) || !Array.isArray(value.annotations)) {
-    throw new Error("O arquivo de projeto está incompleto.");
+    throw new Error(copy.errProjectIncomplete);
   }
 
   const assets = value.assets.filter((item): item is PortableAsset =>
@@ -59,16 +61,16 @@ function parseManifest(value: unknown): ProjectManifest {
   );
   const annotations = value.annotations.filter((item): item is Annotation =>
     isObject(item) && typeof item.id === "string" && typeof item.asset === "string" && typeof item.label === "string" &&
-    (item.type === "box" || item.type === "polygon" || item.type === "point"),
+    (item.type === "box" || item.type === "polygon" || item.type === "line" || item.type === "point"),
   );
 
-  if (!assets.length || !labels.length) throw new Error("O projeto não contém imagens ou classes válidas.");
+  if (!assets.length || !labels.length) throw new Error(copy.errProjectEmpty);
   const assetIds = new Set(assets.map((item) => item.id));
   const labelIds = new Set(labels.map((item) => item.id));
   return {
-    format: "visionlabel-project",
+    format: "poligome-project",
     version: 2,
-    project_name: value.project_name.trim() || "Projeto VisionLabel",
+    project_name: value.project_name.trim() || copy.defaultProjectName,
     saved_at: typeof value.saved_at === "string" ? value.saved_at : new Date().toISOString(),
     assets,
     labels,
@@ -76,7 +78,7 @@ function parseManifest(value: unknown): ProjectManifest {
   };
 }
 
-export async function saveVisionLabelProject(projectName: string, assets: Asset[], labels: Label[], annotations: Annotation[], mode: ProjectSaveMode) {
+export async function savePoligomeProject(projectName: string, assets: Asset[], labels: Label[], annotations: Annotation[], mode: ProjectSaveMode, copy: Copy) {
   const zip = new JSZip();
   const portableAssets = await Promise.all(assets.map(async (asset, index): Promise<PortableAsset> => {
     const { src, local, ...metadata } = asset;
@@ -86,7 +88,7 @@ export async function saveVisionLabelProject(projectName: string, assets: Asset[
     if (!shouldBundle) return { ...metadata, source: src };
 
     const response = await fetch(src);
-    if (!response.ok) throw new Error(`Não foi possível ler ${asset.name}.`);
+    if (!response.ok) throw new Error(fill(copy.errProjectReadImage, { name: asset.name }));
     const imageBlob = await response.blob();
     const imagePath = `images/${String(index + 1).padStart(4, "0")}-${safeFileName(asset.name, `image-${index + 1}`)}`;
     zip.file(imagePath, imageBlob);
@@ -94,26 +96,26 @@ export async function saveVisionLabelProject(projectName: string, assets: Asset[
   }));
 
   const manifest: ProjectManifest = {
-    format: "visionlabel-project",
+    format: "poligome-project",
     version: 2,
-    project_name: projectName.trim() || "Projeto VisionLabel",
+    project_name: projectName.trim() || copy.defaultProjectName,
     saved_at: new Date().toISOString(),
     assets: portableAssets,
     labels,
     annotations,
   };
   zip.file("project.json", JSON.stringify(manifest, null, 2));
-  const archive = await zip.generateAsync({ type: "blob", compression: "STORE", mimeType: "application/vnd.visionlabel.project+zip" });
-  const fileName = `${safeBaseName(manifest.project_name)}.visionlabel`;
+  const archive = await zip.generateAsync({ type: "blob", compression: "STORE", mimeType: "application/vnd.poligome.project+zip" });
+  const fileName = `${safeBaseName(manifest.project_name)}.plgm`;
   downloadBlob(fileName, archive);
   return fileName;
 }
 
-export async function openVisionLabelProject(file: File): Promise<LoadedVisionLabelProject> {
+export async function openPoligomeProject(file: File, copy: Copy): Promise<LoadedPoligomeProject> {
   const zip = await JSZip.loadAsync(file);
   const manifestEntry = zip.file("project.json");
-  if (!manifestEntry) throw new Error("O arquivo project.json não foi encontrado.");
-  const manifest = parseManifest(JSON.parse(await manifestEntry.async("string")) as unknown);
+  if (!manifestEntry) throw new Error(copy.errProjectManifest);
+  const manifest = parseManifest(JSON.parse(await manifestEntry.async("string")) as unknown, copy);
   const objectUrls: string[] = [];
 
   try {
@@ -121,14 +123,14 @@ export async function openVisionLabelProject(file: File): Promise<LoadedVisionLa
       const { bundled_path: bundledPath, source, ...metadata } = asset;
       if (bundledPath) {
         const imageEntry = zip.file(bundledPath);
-        if (!imageEntry) throw new Error(`A imagem ${asset.name} não foi encontrada no projeto.`);
+        if (!imageEntry) throw new Error(fill(copy.errProjectImageMissing, { name: asset.name }));
         const imageBlob = await imageEntry.async("blob");
         const src = URL.createObjectURL(imageBlob);
         objectUrls.push(src);
         return { ...metadata, src, local: true, missing: false, byteSize: metadata.byteSize ?? imageBlob.size };
       }
       if (asset.missing) return { ...metadata, src: "", local: true, missing: true };
-      if (!source || source === "local") throw new Error(`A imagem ${asset.name} não está incorporada ao projeto.`);
+      if (!source || source === "local") throw new Error(fill(copy.errProjectImageNotBundled, { name: asset.name }));
       return { ...metadata, src: source, local: false };
     }));
     return { projectName: manifest.project_name, assets, labels: manifest.labels, annotations: manifest.annotations, objectUrls, missingImages: assets.filter((asset) => asset.missing).length };

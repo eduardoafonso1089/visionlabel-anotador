@@ -1,5 +1,5 @@
 import JSZip from "jszip";
-import { annotationBounds, annotationsBounds, polygonArea, scalePoints } from "./geometry";
+import { annotationBounds, polygonArea, scalePoints } from "./geometry";
 import type { Annotation, Asset, Label } from "./types";
 
 function baseName(name: string, fallback: string) {
@@ -21,29 +21,6 @@ export function downloadBlob(name: string, blob: Blob) {
   }, 1500);
 }
 
-function groupCocoAnnotations(annotations: Annotation[]) {
-  const groups: Annotation[][] = [];
-  const groupedInstanceIndexes = new Map<string, number>();
-
-  annotations.forEach((annotation) => {
-    if (annotation.type !== "polygon" || !annotation.instanceId) {
-      groups.push([annotation]);
-      return;
-    }
-
-    const key = `${annotation.asset}\u0000${annotation.label}\u0000${annotation.instanceId}`;
-    const existingIndex = groupedInstanceIndexes.get(key);
-    if (existingIndex === undefined) {
-      groupedInstanceIndexes.set(key, groups.length);
-      groups.push([annotation]);
-      return;
-    }
-    groups[existingIndex].push(annotation);
-  });
-
-  return groups;
-}
-
 export function exportCoco(assets: Asset[], labels: Label[], annotations: Annotation[]) {
   const images = assets.map((asset, index) => ({
     id: index + 1,
@@ -56,25 +33,28 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
     name: label.name,
     supercategory: "object",
   }));
-  const cocoAnnotations = groupCocoAnnotations(annotations).map((components, index) => {
-    const annotation = components[0];
+  const cocoAnnotations = annotations.map((annotation, index) => {
     const imageIndex = assets.findIndex((asset) => asset.id === annotation.asset);
     const categoryIndex = labels.findIndex((label) => label.id === annotation.label);
     const image = assets[imageIndex];
     const width = image?.width ?? 1000;
     const height = image?.height ?? 650;
-    const bounds = annotation.type === "polygon" ? annotationsBounds(components) : annotationBounds(annotation);
+    const bounds = annotationBounds(annotation);
     const scaledBounds = scalePoints(
       [bounds.x, bounds.y, bounds.x + bounds.width, bounds.y + bounds.height],
       width,
       height,
     );
-    const segmentation = annotation.type === "polygon"
-      ? components.map((component) => scalePoints(component.pts ?? [], width, height))
-      : [];
+    const segmentation =
+      annotation.type === "polygon" ? [scalePoints(annotation.pts ?? [], width, height)] : [];
+    // Uma polilinha não delimita região: sai em `line` (extensão), com area 0 e segmentation
+    // vazia, para nenhum consumidor a interpretar como máscara.
+    const line = annotation.type === "line" ? scalePoints(annotation.pts ?? [], width, height) : [];
     const area = annotation.type === "polygon"
-      ? segmentation.reduce((total, polygon) => total + polygonArea(polygon), 0)
-      : (scaledBounds[2] - scaledBounds[0]) * (scaledBounds[3] - scaledBounds[1]);
+      ? polygonArea(scalePoints(annotation.pts ?? [], width, height))
+      : annotation.type === "line"
+        ? 0
+        : (scaledBounds[2] - scaledBounds[0]) * (scaledBounds[3] - scaledBounds[1]);
     return {
       id: index + 1,
       image_id: imageIndex + 1,
@@ -86,6 +66,7 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
         scaledBounds[3] - scaledBounds[1],
       ],
       segmentation,
+      line,
       keypoints:
         annotation.type === "point"
           ? scalePoints([annotation.x ?? 0, annotation.y ?? 0], width, height).concat(2)
@@ -96,15 +77,15 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
     };
   });
   downloadBlob(
-    "visionlabel-coco.json",
+    "poligome-coco.json",
     new Blob(
-      [JSON.stringify({ info: { description: "VisionLabel dataset", version: "1.0" }, images, categories, annotations: cocoAnnotations }, null, 2)],
+      [JSON.stringify({ info: { description: "Poligome dataset", version: "1.0" }, images, categories, annotations: cocoAnnotations }, null, 2)],
       { type: "application/json;charset=utf-8" },
     ),
   );
 }
 
-export async function exportYoloZip(assets: Asset[], labels: Label[], annotations: Annotation[]) {
+export async function exportYoloZip(assets: Asset[], labels: Label[], annotations: Annotation[], readme: string) {
   const zip = new JSZip();
   const labelFolder = zip.folder("labels");
   assets.forEach((asset, imageIndex) => {
@@ -134,7 +115,7 @@ export async function exportYoloZip(assets: Asset[], labels: Label[], annotation
   );
   zip.file(
     "README.txt",
-    "Exportação VisionLabel para YOLO. Caixas usam o formato de detecção e polígonos usam o formato de segmentação. Pontos-chave permanecem disponíveis na exportação COCO. Componentes desconectados de uma mesma instância SAM são linhas separadas no YOLO; use COCO para preservar o agrupamento multipolígono.\n",
+    `${readme}\n`,
   );
-  downloadBlob("visionlabel-yolo.zip", await zip.generateAsync({ type: "blob" }));
+  downloadBlob("poligome-yolo.zip", await zip.generateAsync({ type: "blob" }));
 }
