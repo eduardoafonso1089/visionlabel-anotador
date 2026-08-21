@@ -4,10 +4,11 @@ import {
   Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus, Crosshair,
   Combine, Copy, Download, Eye, EyeOff, FileText, FolderOpen, FolderUp, Hand, HardDriveDownload, ImagePlus, Images, Keyboard, Languages, Link2,
   Focus, ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine, Save, ShieldCheck,
-  Monitor, Moon, Palette, Pencil, Pentagon, Plus, Power, Redo2, Scissors, Search, Settings2, Sparkles,
+  Box, Monitor, Moon, Palette, Pencil, Pentagon, Plus, Redo2, Scissors, Search, Settings2, Sparkles,
   Spline, Square, Sun, Tags, Trash2, Undo2, WandSparkles, X, ZoomIn, ZoomOut, PenTool,
 } from "lucide-react";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import SamSetupModal from "../components/SamSetupModal";
 import {
   annotationIntersectsRect, boundedAnnotationDelta, deletePolygonVertex, edgeMidpoints,
   insertPolygonVertex, movePolygon, MIN_VERTEX_DISTANCE, pointInPolygon, pointsToSvg,
@@ -18,9 +19,11 @@ import { exportCoco, exportYoloZip } from "../lib/exporters";
 import { fill, getCopy, storedLanguage, storedTheme } from "../lib/i18n";
 import { openPoligomeProject, savePoligomeProject } from "../lib/project";
 import type { ProjectSaveMode } from "../lib/project";
-import { requestSamMask } from "../lib/sam";
+import { requestSamPredictions } from "../lib/sam";
+import { DEFAULT_SAM_MODEL_ID, getSamModel, isSamModelId } from "../lib/sam-models";
+import type { SamModelId } from "../lib/sam-models";
 import type { Language, ThemeMode } from "../lib/i18n";
-import type { Annotation, Asset, Label, SamPrompt, Tool } from "../lib/types";
+import type { Annotation, Asset, Label, SamBoxPrompt, SamMaskPrediction, SamPrompt, Tool } from "../lib/types";
 
 // useLayoutEffect não roda no servidor; alternar evita o aviso do React na renderização SSR.
 const useIsomorphicLayoutEffect = typeof window === "undefined" ? useEffect : useLayoutEffect;
@@ -75,6 +78,14 @@ type TransformDrag = {
   startDistance: number;
   points: number[];
 };
+type SamInteractionMode = "points" | "box" | "text";
+type SamConnectionState = "idle" | "checking" | "loading" | "ready" | "error" | "offline";
+type SamRunOptions = {
+  prompts?: SamPrompt[];
+  box?: SamBoxPrompt | null;
+  text?: string;
+  multimaskOutput?: boolean;
+};
 
 // Símbolo geométrico nativo da marca; o texto segue a fonte já carregada pelo app.
 function BrandLockup({ height = 30 }: { height?: number }) {
@@ -118,6 +129,12 @@ function formatBytes(bytes: number) {
   if (!bytes) return "—";
   if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`;
   return `${(bytes / 1024 / 1024).toFixed(bytes < 10 * 1024 * 1024 ? 1 : 0)} MB`;
+}
+
+function randomIdPart() {
+  return typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+    ? crypto.randomUUID()
+    : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
 }
 
 function readImageDimensions(src: string) {
@@ -212,11 +229,22 @@ export default function Home() {
     } catch { return ""; }
   });
   const [samEndpointDraft, setSamEndpointDraft] = useState("http://127.0.0.1:7860/predict");
-  const [samConnectionState, setSamConnectionState] = useState<"idle" | "checking" | "loading" | "ready" | "offline">("idle");
+  const [samConnectionState, setSamConnectionState] = useState<SamConnectionState>("idle");
   const [samRuntime, setSamRuntime] = useState("");
+  const [samLoadedModelId, setSamLoadedModelId] = useState<string | null>(null);
+  const [samModelId, setSamModelId] = useState<SamModelId>(() => {
+    if (typeof window === "undefined") return DEFAULT_SAM_MODEL_ID;
+    const stored = localStorage.getItem("visionlabel-sam-model");
+    return isSamModelId(stored) ? stored : DEFAULT_SAM_MODEL_ID;
+  });
   const [samPromptMode, setSamPromptMode] = useState<0 | 1>(1);
+  const [samInteractionMode, setSamInteractionMode] = useState<SamInteractionMode>("points");
   const [samPrompts, setSamPrompts] = useState<SamPrompt[]>([]);
-  const [samPreview, setSamPreview] = useState<number[]>([]);
+  const [samBoxStart, setSamBoxStart] = useState<{ x: number; y: number } | null>(null);
+  const [samBox, setSamBox] = useState<SamBoxPrompt | null>(null);
+  const [samText, setSamText] = useState("");
+  const [samThreshold, setSamThreshold] = useState(0.5);
+  const [samPredictions, setSamPredictions] = useState<SamMaskPrediction[]>([]);
   const [samLoading, setSamLoading] = useState(false);
   const input = useRef<HTMLInputElement>(null);
   const cocoInputRef = useRef<HTMLInputElement>(null);
@@ -235,6 +263,8 @@ export default function Home() {
   const renameCancelledRef = useRef(false);
   const zoomAnchorRef = useRef<{ x: number; y: number } | null>(null);
   const pendingZoomRef = useRef<{ clientX: number; clientY: number; anchorX: number; anchorY: number } | null>(null);
+  const samAbortRef = useRef<AbortController | null>(null);
+  const samClientIdRef = useRef("");
   const projectObjectUrlsRef = useRef<string[]>([]);
   const labelsRef = useRef(labels);
   const idCounter = useRef(0);
@@ -251,6 +281,8 @@ export default function Home() {
   );
   const currentImageAnnotationsHidden = currentAnnotations.length > 0 && currentAnnotations.every((annotation) => hiddenAnnotations.includes(annotation.id));
   const copy = getCopy(language);
+  const selectedSamModel = getSamModel(samModelId) ?? getSamModel(DEFAULT_SAM_MODEL_ID)!;
+  const samPreviewPolygons = samPredictions.flatMap((prediction) => prediction.polygons);
   const activeAnnotation = annotations.find((annotation) => annotation.id === selected);
   const activePolygonBounds = activeAnnotation?.type === "polygon" && (activeAnnotation.pts?.length ?? 0) >= 6
     ? polygonBounds(activeAnnotation.pts ?? [])
@@ -298,6 +330,7 @@ export default function Home() {
   useEffect(() => { labelsRef.current = labels; }, [labels]);
 
   useEffect(() => {
+    samClientIdRef.current = `visionlabel-${randomIdPart()}`;
     const frame = window.requestAnimationFrame(() => setMounted(true));
     return () => window.cancelAnimationFrame(frame);
   }, []);
@@ -328,6 +361,10 @@ export default function Home() {
   }, [lineThickness]);
 
   useEffect(() => {
+    localStorage.setItem("poligome-sam-model", samModelId);
+  }, [samModelId]);
+
+  useEffect(() => {
     localStorage.removeItem("poligome-labels");
     localStorage.removeItem("poligome-annotations");
     localStorage.removeItem("poligome-project-name");
@@ -354,10 +391,7 @@ export default function Home() {
 
   function makeId(prefix: string) {
     idCounter.current += 1;
-    const randomPart = typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
-      ? crypto.randomUUID()
-      : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
-    return `${prefix}-${randomPart}-${idCounter.current}`;
+    return `${prefix}-${randomIdPart()}-${idCounter.current}`;
   }
 
   const showToast = useCallback((message: string) => {
@@ -427,7 +461,14 @@ export default function Home() {
 
   useEffect(() => {
     const keydown = (event: KeyboardEvent) => {
-      if ((event.target as HTMLElement).tagName === "INPUT") return;
+      if (samOpen) {
+        if (event.key === "Escape") {
+          event.preventDefault();
+          setSamOpen(false);
+        }
+        return;
+      }
+      if ((event.target as HTMLElement).tagName === "INPUT" && event.key !== "Escape") return;
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") { event.preventDefault(); undo(); return; }
       if (event.key === "Enter" && tool === "polygon") finishPolygon();
       if (event.key === "Enter" && tool === "line") finishLine();
@@ -436,14 +477,15 @@ export default function Home() {
         // voltamos para Selecionar e mover sem perder esse contexto de edição.
         const returnsToSelection = tool === "split" || tool === "transform" || tool === "reshape";
         const isCreationTool = tool === "box" || tool === "polygon" || tool === "freehand" || tool === "line" || tool === "point" || tool === "sam";
-        setProjectOpen(false); setProjectEditing(false); setProjectSaveOpen(false); setClassManagerOpen(false); setSelectedClassIds([]);
+        setProjectOpen(false); setProjectEditing(false); setProjectSaveOpen(false); setClassManagerOpen(false); setSamOpen(false); setSelectedClassIds([]);
         setPolygonDraft([]); setLineDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
         setSplitStart(null); setSplitEnd(null); setReshapeDraft([]); setReshapeDrawing(false);
         annotationDragRef.current = null; setAnnotationDrag(null);
         selectionMarqueeRef.current = null; setSelectionMarquee(null);
         reshapeTargetRef.current = null; setReshapeStartInside(null);
         transformDragRef.current = null; setTransformDrag(null); setSnapGuide(null);
-        samRequestRef.current += 1; setSamPrompts([]); setSamPreview([]); setSamLoading(false);
+        samAbortRef.current?.abort(); samRequestRef.current += 1;
+        setSamPrompts([]); setSamBoxStart(null); setSamBox(null); setSamPredictions([]); setSamLoading(false);
         if (returnsToSelection) setTool("select");
         else {
           setSelected(null); setMultiSelected([]);
@@ -457,10 +499,10 @@ export default function Home() {
       const tools: Record<string, Tool> = { v: "select", h: "pan", b: "box", p: "polygon", f: "freehand", l: "line", k: "point", s: "sam", t: "transform", r: "reshape" };
       const nextTool = tools[event.key.toLowerCase()];
       if (nextTool) {
-        if (nextTool === "sam" && !samEndpoint) {
+        if (nextTool === "sam" && (!samEndpoint || samConnectionState !== "ready" || samLoadedModelId !== samModelId)) {
           setSamEndpointDraft(samEndpoint || "http://127.0.0.1:7860/predict"); setSamOpen(true);
         } else if (nextTool === "sam") {
-          samRequestRef.current += 1; setSamPrompts([]); setSamPreview([]); setSamLoading(false);
+          samAbortRef.current?.abort(); samRequestRef.current += 1; setSamPrompts([]); setSamBoxStart(null); setSamBox(null); setSamPredictions([]); setSamLoading(false);
           setSamPromptMode(1); setTool(tool === "sam" ? "select" : "sam");
         } else setTool(nextTool);
       }
@@ -469,7 +511,7 @@ export default function Home() {
     };
     addEventListener("keydown", keydown);
     return () => removeEventListener("keydown", keydown);
-  }, [deleteSelection, finishLine, finishPolygon, labels, samEndpoint, tool, undo]);
+  }, [deleteSelection, finishLine, finishPolygon, labels, samConnectionState, samEndpoint, samLoadedModelId, samModelId, samOpen, tool, undo]);
 
   function resetDrafts() {
     setPolygonDraft([]); setLineDraft([]); setFreehandDraft([]); setFreehandDrawing(false); setDraft(null);
@@ -591,15 +633,37 @@ export default function Home() {
 
   function capture(pointerId: number) { svgRef.current?.setPointerCapture(pointerId); }
 
-  async function runSam(prompts: SamPrompt[]) {
+  async function runSam({
+    prompts = samPrompts,
+    box = samBox,
+    text,
+    multimaskOutput = false,
+  }: SamRunOptions = {}) {
+    if (!prompts.length && !box && !text?.trim()) return;
+    samAbortRef.current?.abort();
+    const controller = new AbortController();
+    samAbortRef.current = controller;
     const requestId = ++samRequestRef.current;
     setSamLoading(true);
     try {
-      const preview = await requestSamMask({ endpoint: samEndpoint, asset, prompts, copy });
-      if (requestId === samRequestRef.current) setSamPreview(preview);
+      const result = await requestSamPredictions({
+        endpoint: samEndpoint,
+        asset,
+        modelId: samModelId,
+        prompts,
+        box,
+        text,
+        threshold: text?.trim() ? samThreshold : undefined,
+        multimaskOutput,
+        clientId: samClientIdRef.current,
+        requestSeq: requestId,
+        signal: controller.signal,
+      });
+      if (requestId === samRequestRef.current) setSamPredictions(result.predictions);
     } catch (error) {
       if (requestId === samRequestRef.current) showToast(error instanceof Error ? error.message : copy.toastSamFailed);
     } finally {
+      if (samAbortRef.current === controller) samAbortRef.current = null;
       if (requestId === samRequestRef.current) setSamLoading(false);
     }
   }
@@ -642,8 +706,14 @@ export default function Home() {
       setSelected(id); setMultiSelected([id]);
     }
     if (tool === "sam") {
-      const prompts = [...samPrompts, { ...point, label: samPromptMode }];
-      setSamPrompts(prompts); void runSam(prompts);
+      if (samInteractionMode === "box" && selectedSamModel.capabilities.boxPrompts) {
+        const nextBox: SamBoxPrompt = { ...point, w: 0, h: 0, label: 1 };
+        setSamBoxStart(point); setSamBox(nextBox); capture(event.pointerId); return;
+      }
+      if (samInteractionMode === "points" && selectedSamModel.capabilities.pointPrompts) {
+        const prompts = [...samPrompts, { ...point, label: samPromptMode }];
+        setSamPrompts(prompts); void runSam({ prompts });
+      }
     }
     if (tool === "split" && activeAnnotation?.type === "polygon") {
       // O primeiro clique inicia a guia; o segundo a confirma e executa o corte.
@@ -684,6 +754,16 @@ export default function Home() {
       }); return;
     }
     if (tool === "split" && splitStart) { setSplitEnd(point); return; }
+    if (tool === "sam" && samInteractionMode === "box" && samBoxStart) {
+      setSamBox({
+        x: Math.min(samBoxStart.x, point.x),
+        y: Math.min(samBoxStart.y, point.y),
+        w: Math.abs(point.x - samBoxStart.x),
+        h: Math.abs(point.y - samBoxStart.y),
+        label: 1,
+      });
+      return;
+    }
     if (!start || tool !== "box") return;
     setDraft({ x: Math.min(start.x, point.x), y: Math.min(start.y, point.y), w: Math.abs(point.x - start.x), h: Math.abs(point.y - start.y) });
   }
@@ -694,6 +774,12 @@ export default function Home() {
     if (vertexDragRef.current || vertexDrag) { vertexDragRef.current = null; setVertexDrag(null); setSnapGuide(null); return; }
     if (tool === "freehand") return;
     if (tool === "reshape") return;
+    if (tool === "sam" && samInteractionMode === "box" && samBoxStart) {
+      setSamBoxStart(null);
+      if (!samBox || samBox.w < 8 || samBox.h < 8) { setSamBox(null); return; }
+      void runSam({ box: samBox, prompts: samPrompts });
+      return;
+    }
     if (tool !== "box" || !draft || draft.w < 8 || draft.h < 8) { setStart(null); setDraft(null); return; }
     remember(); const id = makeId("annotation");
     setAnnotations((items) => [...items, { id, asset: current, label: activeLabel, type: "box", ...draft }]);
@@ -865,14 +951,14 @@ export default function Home() {
     transformDragRef.current = null; setTransformDrag(null); showToast(copy.toastTransformApplied);
   }
 
-  function captureVertexPointer(event: React.PointerEvent<SVGCircleElement>, drag: VertexDrag) {
+  function captureVertexPointer(event: React.PointerEvent<SVGElement>, drag: VertexDrag) {
     vertexDragRef.current = drag;
     setVertexDrag(drag);
     try { event.currentTarget.setPointerCapture(event.pointerId); }
     catch { capture(event.pointerId); }
   }
 
-  function moveVertexPointer(event: React.PointerEvent<SVGCircleElement>) {
+  function moveVertexPointer(event: React.PointerEvent<SVGElement>) {
     const drag = vertexDragRef.current;
     if (!drag) return;
     event.preventDefault(); event.stopPropagation();
@@ -881,7 +967,7 @@ export default function Home() {
     setSaved(false);
   }
 
-  function finishVertexPointer(event: React.PointerEvent<SVGCircleElement>) {
+  function finishVertexPointer(event: React.PointerEvent<SVGElement>) {
     if (!vertexDragRef.current) return;
     event.preventDefault(); event.stopPropagation();
     try {
@@ -891,14 +977,14 @@ export default function Home() {
     setVertexDrag(null); setSnapGuide(null);
   }
 
-  function beginVertexDrag(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, vertexIndex: number) {
+  function beginVertexDrag(event: React.PointerEvent<SVGElement>, annotation: Annotation, vertexIndex: number) {
     if (event.button !== 0 || tool !== "select") return;
     event.preventDefault(); event.stopPropagation(); remember(); setSelected(annotation.id); setMultiSelected([annotation.id]); setSnapGuide(null);
     const drag = { annotationId: annotation.id, vertexIndex };
     setSelectedVertex(drag); captureVertexPointer(event, drag);
   }
 
-  function insertVertex(event: React.PointerEvent<SVGCircleElement>, annotation: Annotation, edgeIndex: number, x: number, y: number) {
+  function insertVertex(event: React.PointerEvent<SVGElement>, annotation: Annotation, edgeIndex: number, x: number, y: number) {
     if (event.button !== 0 || tool !== "select") return;
     event.preventDefault(); event.stopPropagation();
     const points = annotation.pts ?? [];
@@ -978,7 +1064,12 @@ export default function Home() {
   function duplicateSelected() {
     if (activeAnnotation?.type !== "polygon") return;
     remember(); const id = makeId("copy");
-    setAnnotations((items) => [...items, { ...activeAnnotation, id, pts: movePolygon(activeAnnotation.pts ?? [], 22, 22) }]);
+    setAnnotations((items) => [...items, {
+      ...activeAnnotation,
+      id,
+      instanceId: activeAnnotation.instanceId ? makeId("instance") : undefined,
+      pts: movePolygon(activeAnnotation.pts ?? [], 22, 22),
+    }]);
     setSelected(id); setMultiSelected([id]); showToast(copy.toastDuplicated);
   }
 
@@ -1358,27 +1449,39 @@ export default function Home() {
     finally { setExporting(false); }
   }
 
-  async function probeSam(endpoint: string) {
-    setSamConnectionState("checking");
+  function samBaseUrl(endpoint: string) {
     try {
       const url = new URL(endpoint);
-      if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-        setSamConnectionState("offline"); return false;
-      }
-      const healthUrl = `${url.origin}${url.pathname.replace(/\/predict\/?$/, "")}/health`;
-      const response = await fetch(healthUrl, { signal: AbortSignal.timeout(6_000) });
+      if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return null;
+      return `${url.origin}${url.pathname.replace(/\/predict\/?$/, "")}`;
+    } catch { return null; }
+  }
+
+  async function probeSam(endpoint: string): Promise<{ ready: boolean; modelId: string | null; state: SamConnectionState }> {
+    setSamConnectionState("checking");
+    const base = samBaseUrl(endpoint);
+    if (!base) {
+      setSamConnectionState("offline"); setSamRuntime(""); setSamLoadedModelId(null);
+      return { ready: false, modelId: null, state: "offline" };
+    }
+    try {
+      const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(6_000) });
       if (!response.ok) throw new Error();
-      const health = await response.json() as { status?: string; device?: string; model_type?: string };
+      const health = await response.json() as { status?: string; device?: string; model_type?: string; model_id?: string; family?: string; error?: string };
+      const modelId = health.model_id ?? null;
+      const modelName = modelId ? getSamModel(modelId)?.name ?? modelId : health.model_type;
+      setSamLoadedModelId(modelId);
+      setSamRuntime([modelName, health.device, health.error].filter(Boolean).join(" · "));
       if (health.status !== "ready") {
-        setSamConnectionState("loading");
-        setSamRuntime(health.model_type ? `${health.model_type} · ${health.device ?? copy.samLoadingDevice}` : "");
-        return false;
+        const state: SamConnectionState = health.status === "error" ? "error" : "loading";
+        setSamConnectionState(state);
+        return { ready: false, modelId, state };
       }
       setSamConnectionState("ready");
-      setSamRuntime([health.model_type, health.device].filter(Boolean).join(" · "));
-      return true;
+      return { ready: true, modelId, state: "ready" };
     } catch {
-      setSamConnectionState("offline"); setSamRuntime(""); return false;
+      setSamConnectionState("offline"); setSamRuntime(""); setSamLoadedModelId(null);
+      return { ready: false, modelId: null, state: "offline" };
     }
   }
   function openSamSettings() {
@@ -1388,30 +1491,101 @@ export default function Home() {
   }
   async function connectSam() {
     const endpoint = samEndpointDraft.trim();
-    if (!await probeSam(endpoint)) {
+    const health = await probeSam(endpoint);
+    if (!health.ready) {
       showToast(copy.toastSamNotReady);
       return;
     }
+    if (health.modelId !== samModelId) {
+      const switched = await switchSamModel(endpoint, samModelId);
+      if (!switched) return;
+    }
     setSamEndpoint(endpoint); localStorage.setItem("poligome-sam-endpoint", endpoint);
-    clearSam(); setSamPromptMode(1); setSamOpen(false); setTool("sam"); showToast(copy.toastSamConnected);
+    clearSam(); setSamPromptMode(1); setSamOpen(false); setTool("sam"); showToast(fill(copy.samConnectedModel, { model: selectedSamModel.name }));
+  }
+
+  // Pede ao conector que recarregue outro modelo e acompanha até o /health confirmar.
+  async function switchSamModel(endpoint: string, modelId: SamModelId) {
+    const base = samBaseUrl(endpoint);
+    if (!base) { showToast(copy.samInvalidEndpoint); return false; }
+    setSamConnectionState("loading");
+    setSamRuntime(fill(copy.samLoadingNamed, { model: getSamModel(modelId)?.name ?? modelId }));
+    try {
+      const response = await fetch(`${base}/load`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+        showToast(typeof body?.detail === "string" ? body.detail : copy.samSwitchRefused);
+        await probeSam(endpoint);
+        return false;
+      }
+    } catch {
+      showToast(copy.samSwitchUnreachable);
+      setSamConnectionState("offline");
+      return false;
+    }
+    // O conector se reinicia para carregar o modelo, então a porta cai por instantes.
+    // 400 tentativas de 1,5 s cobrem os 10 minutos do carregamento mais lento.
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const health = await probeSam(endpoint);
+      if (health.ready && health.modelId === modelId) return true;
+      if (health.state === "error") {
+        showToast(fill(copy.samSwitchFailed, { model: modelId }));
+        return false;
+      }
+    }
+    showToast(fill(copy.samSwitchTimeout, { model: modelId }));
+    return false;
   }
   function activateSam() {
     if (tool === "sam") {
       clearSam(); setTool("select"); showToast(copy.samToolDisabled); return;
     }
-    if (!samEndpoint) { openSamSettings(); return; }
+    if (!samEndpoint || samConnectionState !== "ready" || samLoadedModelId !== samModelId) { openSamSettings(); return; }
     clearSam(); setSamPromptMode(1); setTool("sam"); showToast(copy.samToolEnabled);
   }
   function acceptSamMask() {
-    if (samPreview.length < 6) return;
-    remember(); const id = makeId("sam");
-    setAnnotations((items) => [...items, { id, asset: current, label: activeLabel, type: "polygon", pts: [...samPreview] }]);
-    setSelected(id); setMultiSelected([id]); setSelectedVertex(null); setBatchLabel(activeLabel);
-    // A ferramenta continua ativa para o próximo objeto; só os prompts são zerados.
-    clearSam(); setSamPromptMode(1); showToast(copy.samSavedToolActive);
+    if (!samPreviewPolygons.length) return;
+    remember();
+    const additions = samPredictions.flatMap((prediction) => {
+      const instanceId = makeId("sam-instance");
+      return prediction.polygons.map((points) => ({
+        id: makeId("sam"),
+        instanceId,
+        asset: current,
+        label: activeLabel,
+        type: "polygon" as const,
+        pts: [...points],
+      }));
+    });
+    const ids = additions.map((annotation) => annotation.id);
+    setAnnotations((items) => [...items, ...additions]);
+    setSelected(ids[0] ?? null); setMultiSelected(ids); setSelectedVertex(null); setBatchLabel(activeLabel);
+    clearSam(); setTool("select"); showToast(copy.samSavedEditable);
   }
-  function clearSam() { samRequestRef.current += 1; setSamPrompts([]); setSamPreview([]); setSamLoading(false); }
+  function clearSam() {
+    invalidateSamPrediction();
+    setSamPrompts([]); setSamBoxStart(null); setSamBox(null); setSamText("");
+  }
+  function invalidateSamPrediction() {
+    samAbortRef.current?.abort(); samAbortRef.current = null; samRequestRef.current += 1;
+    setSamPredictions([]); setSamLoading(false);
+  }
   function restartSam() { clearSam(); setSamPromptMode(1); showToast(copy.samRestarted); }
+  function chooseSamInteractionMode(mode: SamInteractionMode) {
+    if (mode === samInteractionMode) return;
+    clearSam(); setSamInteractionMode(mode); setSamPromptMode(1);
+  }
+  function runSamText() {
+    const text = samText.trim();
+    if (!text) { showToast(copy.samDescribeConcept); return; }
+    void runSam({ prompts: [], box: null, text, multimaskOutput: true });
+  }
   function chooseImage(id: string) {
     const target = assets.find((item) => item.id === id);
     if (!target) return;
@@ -1532,8 +1706,9 @@ export default function Home() {
             {reshapeDraft.length > 1 && <g><polyline className="reshape-line" points={pointsToSvg(reshapeDraft)} />{reshapeDraft.length >= 4 && <><circle className="reshape-endpoint" cx={reshapeDraft[0]} cy={reshapeDraft[1]} r={markerRadius * 1.25} strokeWidth={markerRadius * .42} /><circle className="reshape-endpoint" cx={reshapeDraft.at(-2)} cy={reshapeDraft.at(-1)} r={markerRadius * 1.25} strokeWidth={markerRadius * .42} /></>}</g>}
             {splitStart && splitEnd && <line className="split-line" x1={splitStart.x} y1={splitStart.y} x2={splitEnd.x} y2={splitEnd.y} />}
             {snapGuide && <g className="snap-guide"><circle cx={snapGuide.x} cy={snapGuide.y} r={markerRadius * 2.2} strokeWidth={markerRadius * .3} /><line x1={snapGuide.x - markerRadius * 1.3} y1={snapGuide.y} x2={snapGuide.x + markerRadius * 1.3} y2={snapGuide.y} strokeWidth={markerRadius * .26} /><line x1={snapGuide.x} y1={snapGuide.y - markerRadius * 1.3} x2={snapGuide.x} y2={snapGuide.y + markerRadius * 1.3} strokeWidth={markerRadius * .26} /></g>}
-            {tool === "sam" && samPreview.length >= 6 && <polygon className="sam-mask-preview" points={pointsToSvg(samPreview)} fill={`${getLabel(activeLabel).color}52`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="10 6" />}
-            {tool === "sam" && samPrompts.map((prompt, index) => { const arm = markerRadius * .5; const bar = markerRadius * .34; return <g key={index} className={`sam-prompt ${prompt.label ? "positive" : "negative"}`}><circle cx={prompt.x} cy={prompt.y} r={markerRadius} strokeWidth={markerRadius * .4} /><line x1={prompt.x - arm} y1={prompt.y} x2={prompt.x + arm} y2={prompt.y} strokeWidth={bar} />{prompt.label === 1 && <line x1={prompt.x} y1={prompt.y - arm} x2={prompt.x} y2={prompt.y + arm} strokeWidth={bar} />}</g>; })}
+            {tool === "sam" && samPreviewPolygons.map((polygon, index) => <polygon key={`sam-preview-${index}`} className="sam-mask-preview" points={pointsToSvg(polygon)} fill={`${getLabel(activeLabel).color}52`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="10 6" />)}
+            {tool === "sam" && samBox && <rect className="sam-box-prompt" x={samBox.x} y={samBox.y} width={samBox.w} height={samBox.h} fill={`${getLabel(activeLabel).color}16`} stroke={getLabel(activeLabel).color} strokeWidth={lineThickness} strokeDasharray="9 6" />}
+            {tool === "sam" && samPrompts.map((prompt, index) => <g key={index} className={`sam-prompt ${prompt.label ? "positive" : "negative"}`}><circle cx={prompt.x} cy={prompt.y} r="13" /><line x1={prompt.x - 6} y1={prompt.y} x2={prompt.x + 6} y2={prompt.y} />{prompt.label === 1 && <line x1={prompt.x} y1={prompt.y - 6} x2={prompt.x} y2={prompt.y + 6} />}</g>)}
           </svg>}
           {tool === "polygon" && polygonDraft.length > 0 && <div className="tip">{copy.polygonFinish}</div>}
           {tool === "line" && <div className="tip">{lineDraft.length ? copy.lineFinish : copy.lineStart}</div>}
@@ -1542,7 +1717,20 @@ export default function Home() {
           {tool === "transform" && <div className="tip">{copy.transformTip}</div>}
           {tool === "reshape" && <div className="tip">{reshapeDrawing ? (reshapeStartInside ? copy.reshapeAdd : copy.reshapeDelete) : copy.reshapeStart}</div>}
           {activeAnnotation?.type === "polygon" && tool === "select" && <div className="polygon-tip">{copy.middlePan} · {copy.polygonTipDetail}</div>}
-          {tool === "sam" && <div className="sam-controls"><div><button className={samPromptMode === 1 ? "active positive" : ""} onClick={() => setSamPromptMode(1)}><CirclePlus size={15} />{copy.samInclude}</button><button className={samPromptMode === 0 ? "active negative" : ""} onClick={() => setSamPromptMode(0)}><CircleMinus size={15} />{copy.samExclude}</button></div><span>{samLoading ? <><LoaderCircle className="spin" size={14} />{copy.samSegmenting}</> : `${samPrompts.length} ${copy.samPoints}`}</span><div><button disabled={!samPrompts.length && !samPreview.length && !samLoading} onClick={restartSam}><ListRestart size={14} />{copy.samRestart}</button><button className="accept" disabled={samPreview.length < 6 || samLoading} onClick={acceptSamMask}><Check size={14} />{copy.samSaveEdit}</button><button aria-label={copy.samConfigure} onClick={openSamSettings}><Settings2 size={15} /></button></div></div>}
+          {tool === "sam" && <div className="sam-controls sam-controls-capability">
+            <div className="sam-mode-tabs" role="tablist" aria-label="Tipo de prompt SAM">
+              <button className={samInteractionMode === "points" ? "active" : ""} onClick={() => chooseSamInteractionMode("points")}>Pontos</button>
+              {selectedSamModel.capabilities.boxPrompts && <button className={samInteractionMode === "box" ? "active" : ""} onClick={() => chooseSamInteractionMode("box")}><Box size={13} />Caixa</button>}
+              {selectedSamModel.capabilities.textPrompts && <button className={samInteractionMode === "text" ? "active" : ""} onClick={() => chooseSamInteractionMode("text")}><Sparkles size={13} />Texto</button>}
+            </div>
+            <div className="sam-mode-input">
+              {samInteractionMode === "points" && <><button className={samPromptMode === 1 ? "active positive" : ""} onClick={() => setSamPromptMode(1)}><CirclePlus size={15} />{copy.samInclude}</button><button className={samPromptMode === 0 ? "active negative" : ""} onClick={() => setSamPromptMode(0)}><CircleMinus size={15} />{copy.samExclude}</button></>}
+              {samInteractionMode === "box" && <small>Arraste uma caixa ao redor do objeto.</small>}
+              {samInteractionMode === "text" && <form onSubmit={(event) => { event.preventDefault(); runSamText(); }}><input aria-label="Conceito para segmentar" placeholder="Ex.: todas as pessoas" value={samText} onChange={(event) => { invalidateSamPrediction(); setSamText(event.target.value); }} /><button type="submit" disabled={!samText.trim() || samLoading}>Segmentar</button><label title="Limiar de confiança">Conf. {Math.round(samThreshold * 100)}%<input aria-label="Limiar de confiança" type="range" min="0.1" max="0.95" step="0.05" value={samThreshold} onChange={(event) => { invalidateSamPrediction(); setSamThreshold(Number(event.target.value)); }} /></label></form>}
+            </div>
+            <span>{samLoading ? <><LoaderCircle className="spin" size={14} />{copy.samSegmenting}</> : samPredictions.length ? `${samPredictions.length} resultado(s) · ${samPreviewPolygons.length} contorno(s)` : samInteractionMode === "points" ? `${samPrompts.length} ${copy.samPoints}` : selectedSamModel.name}</span>
+            <div className="sam-actions"><button disabled={!samPrompts.length && !samBox && !samText && !samPreviewPolygons.length && !samLoading} onClick={restartSam}><ListRestart size={14} />{copy.samRestart}</button><button className="accept" disabled={!samPreviewPolygons.length || samLoading} onClick={acceptSamMask}><Check size={14} />{copy.samSaveEdit}{samPreviewPolygons.length > 1 ? ` (${samPreviewPolygons.length})` : ""}</button><button aria-label={copy.samConfigure} onClick={openSamSettings}><Settings2 size={15} /></button></div>
+          </div>}
         </div> : <div className="empty-project"><span><Images size={30} /></span><h2>{copy.emptyProjectTitle}</h2><p>{copy.emptyProjectHint}</p><div><button className="primary" onClick={() => input.current?.click()}><ImagePlus size={16} />{copy.importImages}</button><button onClick={requestOpenProject}><FolderUp size={16} />{copy.openProject}</button></div><small>{copy.privacy}</small></div>}</div></div>
         <div className="status"><div><button onClick={() => go(-1)} disabled={!asset || assets[0]?.id === current}><ChevronLeft size={16} /></button><span><b>{asset ? assets.findIndex((item) => item.id === current) + 1 : 0}</b> / {assets.length}</span><button onClick={() => go(1)} disabled={!asset || assets.at(-1)?.id === current}><ChevronRight size={16} /></button></div><p><Sparkles size={14} />{annotationDrag ? `${copy.moving} (${annotationDrag.originals.length})` : selectionMarquee ? copy.selecting : transformDrag ? copy.transforming : reshapeDrawing ? copy.reshaping : selectedVertex ? fill(copy.statusVertexSelected, { status: snapping ? copy.snapStateOn : copy.snapStateOff }) : polygonDraft.length || lineDraft.length ? fill(copy.statusDraftPoints, { n: (polygonDraft.length + lineDraft.length) / 2 }) : multiSelected.length > 1 ? `${multiSelected.length} ${copy.selectedObjects}` : currentAnnotations.length ? `${currentAnnotations.length} ${copy.imageAnnotations}` : asset ? copy.ready : copy.emptyProjectTitle}</p><button><Keyboard size={15} /> {copy.shortcuts}</button></div>
       </section>
@@ -1563,8 +1751,20 @@ export default function Home() {
     {pendingDeleteAnnotations.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-annotations-title" aria-describedby="delete-annotations-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-annotations-title">{copy.confirmDeleteAnnotations}</h2><p>{pendingDeleteAnnotations.length} {copy.annotationsToDelete}</p></div></div><button onClick={() => setPendingDeleteAnnotationIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-annotations-description" className="delete-class-warning">{copy.deleteAnnotationsWarning}</p><div className="delete-class-impact"><span>{copy.annotationsToDelete}</span><b>{pendingDeleteAnnotations.length}</b></div><footer><button onClick={() => setPendingDeleteAnnotationIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingAnnotations}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
     {pendingDeleteClasses.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-class-title" aria-describedby="delete-class-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-class-title">{pendingDeleteClasses.length === 1 ? copy.confirmDeleteClass : copy.confirmDeleteClasses}</h2><p>{pendingDeleteClasses.map((label) => label.name).join(", ")}</p></div></div><button onClick={() => setPendingDeleteClassIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-class-description" className="delete-class-warning">{copy.deleteClassWarning} <strong>{copy.unlabeled}</strong>.</p><div className="delete-class-impact"><span>{copy.affectedAnnotations}</span><b>{pendingAffectedAnnotations}</b></div><footer><button onClick={() => setPendingDeleteClassIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingClasses}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
     {preferencesOpen && <div className="modal-backdrop"><section className="sam-modal preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title"><header><div><span><Settings2 size={18} /></span><div><h2 id="preferences-title">{copy.preferences}</h2><p>poligome.com</p></div></div><button onClick={() => setPreferencesOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="preferences-tabs"><button className={preferencesTab === "appearance" ? "active" : ""} onClick={() => setPreferencesTab("appearance")}><Sun size={14} />{copy.appearance}</button><button className={preferencesTab === "language" ? "active" : ""} onClick={() => setPreferencesTab("language")}><Languages size={14} />{copy.language}</button></div>{preferencesTab === "appearance" ? <div className="preference-options"><button className={themeMode === "system" ? "active" : ""} onClick={() => setThemeMode("system")}><Monitor size={20} /><b>{copy.system}</b></button><button className={themeMode === "light" ? "active" : ""} onClick={() => setThemeMode("light")}><Sun size={20} /><b>{copy.light}</b></button><button className={themeMode === "dark" ? "active" : ""} onClick={() => setThemeMode("dark")}><Moon size={20} /><b>{copy.dark}</b></button></div> : <div className="language-options"><button className={language === "pt" ? "active" : ""} onClick={() => setLanguage("pt")}><b>Português</b><span>PT-BR</span></button><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}><b>English</b><span>EN</span></button><button className={language === "fr" ? "active" : ""} onClick={() => setLanguage("fr")}><b>Français</b><span>FR</span></button><button className={language === "es" ? "active" : ""} onClick={() => setLanguage("es")}><b>Español</b><span>ES</span></button></div>}<footer><button className="connect" onClick={() => setPreferencesOpen(false)}><Check size={15} /> {copy.close}</button></footer></section></div>}
-    {samOpen && <div className="modal-backdrop"><section className="sam-modal sam-local-modal" role="dialog" aria-modal="true" aria-labelledby="sam-title"><header><div><span><WandSparkles size={18} /></span><div><h2 id="sam-title">{copy.samTitle}</h2><p>{copy.samSubtitle}</p></div></div><button onClick={() => setSamOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="hardware-warning"><b>{copy.beforeRun}</b><p><strong>{copy.samHardwareRecommended}</strong> {copy.samHardwareDetail}</p><p>{copy.samInstallerDetail}</p></div><div className="sam-oneclick"><b>{copy.oneClickSetup}</b><p>{copy.oneClickHint}</p><div><a className="primary" href="/poligome-sam-windows.bat" download><Download size={15} /><span><strong>{copy.windowsInstaller}</strong><small>Windows 10/11</small></span></a><a href="/poligome-sam-macos-linux.sh" download><Download size={15} /><span><strong>{copy.unixInstaller}</strong><small>macOS · Linux</small></span></a></div><small>{copy.autoDownloadModel}</small></div><div className="sam-relaunch"><div><b>{copy.installedAlready}</b><p>{copy.restartServerHint}</p></div><div><a className="windows" href="/poligome-sam-start-windows.bat" download><Power size={14} />{copy.restartWindows}</a><a href="/poligome-sam-start-macos-linux.sh" download><Power size={14} />{copy.restartUnix}</a></div></div><div className={`sam-status ${samConnectionState}`}><span /> <b>{samConnectionState === "ready" ? copy.samReady : samConnectionState === "loading" ? copy.samLoadingModel : samConnectionState === "checking" ? copy.samChecking : copy.samOffline}</b>{samRuntime && <small>{samRuntime}</small>}</div><details className="sam-advanced"><summary>{copy.advancedSetup}</summary><div className="sam-setup"><b>{copy.manualSetup}</b><ol><li><a href="https://github.com/facebookresearch/segment-anything#model-checkpoints" target="_blank" rel="noreferrer"><Download size={13} /> {copy.checkpointPage}</a></li><li><a href="/poligome-sam-local.py" download><Download size={13} /> {copy.connectorDownload}</a></li><li>{copy.samManualStep} <code>.pth</code>.</li></ol><pre>python poligome-sam-local.py --checkpoint sam_vit_b_01ec64.pth</pre></div><label>{copy.localAddress}<input type="url" placeholder="http://127.0.0.1:7860/predict" value={samEndpointDraft} onChange={(event) => setSamEndpointDraft(event.target.value)} /></label></details><div className="sam-contract"><b>{copy.noUpload}</b><p>{copy.samPrivacyIntro} <code>localhost</code>{copy.samPrivacyDetail}</p></div><footer><button onClick={() => setSamOpen(false)}>{copy.cancel}</button><button className="connect" disabled={samConnectionState === "checking"} onClick={() => void connectSam()}>{samConnectionState === "checking" ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} {copy.verifyUse}</button></footer></section></div>}
-    {(leftOpen || rightOpen) && <button className="backdrop" onClick={() => { setLeftOpen(false); setRightOpen(false); }} aria-label={copy.closePanel} />}
+    {samOpen && <SamSetupModal
+      selectedModelId={samModelId}
+      loadedModelId={samLoadedModelId}
+      connectionState={samConnectionState}
+      runtimeLabel={samRuntime}
+      endpoint={samEndpointDraft}
+      onSelectModel={(modelId) => {
+        clearSam(); setSamInteractionMode("points"); setSamModelId(modelId);
+      }}
+      onEndpointChange={setSamEndpointDraft}
+      onConnect={() => void connectSam()}
+      onClose={() => setSamOpen(false)}
+    />}
+    {(leftOpen || rightOpen) && <button className="backdrop" onClick={() => { setLeftOpen(false); setRightOpen(false); }} aria-label="Fechar painel" />}
     {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
   </main>;
 }

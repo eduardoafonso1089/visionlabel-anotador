@@ -374,7 +374,7 @@ export const SAM_3_1_VIDEO_CAPABILITY_NOTE = {
   installable: false,
   status: "released-not-integrated",
   description:
-    "Release publicado pela Meta em 27/03/2026 para tracking denso em vídeo. Agrupa objetos em memória compartilhada para reduzir trabalho redundante; ainda não é uma opção instalável no VisionLabel.",
+    "Release publicado pela Meta em 27/03/2026 para tracking denso em vídeo. Agrupa objetos em memória compartilhada para reduzir trabalho redundante; ainda não é uma opção instalável no Poligome.",
   capabilities: [
     "Detecção e tracking em vídeo por texto e prompts visuais",
     "Até 16 objetos processados em um único forward pass",

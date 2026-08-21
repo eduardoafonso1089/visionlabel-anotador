@@ -5,11 +5,11 @@ set -euo pipefail
 # rede. Os executáveis externos relevantes são substituídos por dublês locais.
 
 PROJECT_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-INSTALLER="${PROJECT_ROOT}/public/visionlabel-sam-macos-linux.sh"
-STARTER="${PROJECT_ROOT}/public/visionlabel-sam-start-macos-linux.sh"
-WINDOWS_INSTALLER="${PROJECT_ROOT}/public/visionlabel-sam-windows.bat"
-WINDOWS_STARTER="${PROJECT_ROOT}/public/visionlabel-sam-start-windows.bat"
-CONNECTOR_SOURCE="${PROJECT_ROOT}/public/visionlabel-sam-local.py"
+INSTALLER="${PROJECT_ROOT}/public/poligome-sam-macos-linux.sh"
+STARTER="${PROJECT_ROOT}/public/poligome-sam-start-macos-linux.sh"
+WINDOWS_INSTALLER="${PROJECT_ROOT}/public/poligome-sam-windows.bat"
+WINDOWS_STARTER="${PROJECT_ROOT}/public/poligome-sam-start-windows.bat"
+CONNECTOR_SOURCE="${PROJECT_ROOT}/public/poligome-sam-local.py"
 
 MODELS=(
   sam2.1-hiera-tiny
@@ -60,11 +60,11 @@ declare -A MODEL_CONFIG=(
 )
 
 declare -A READY_FILE=(
-  [sam2]=.visionlabel-sam2-2b90b9f5ceec907a1c18123530e92e794ad901a4.ok
-  [sam3]=.visionlabel-sam3-8f0b7f4d4e7eda2ed606ebde6702c93359ad01da.ok
+  [sam2]=.poligome-sam2-2b90b9f5ceec907a1c18123530e92e794ad901a4.ok
+  [sam3]=.poligome-sam3-8f0b7f4d4e7eda2ed606ebde6702c93359ad01da.ok
 )
 
-TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/visionlabel-sam-tests.XXXXXX")"
+TEMP_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/poligome-sam-tests.XXXXXX")"
 trap 'rm -rf -- "$TEMP_ROOT"' EXIT HUP INT TERM
 
 fail() {
@@ -119,9 +119,9 @@ assert_no_unexpected_work() {
 assert_installer_cache() {
   local app_dir="$1"
   local context="$2"
-  local cached_installer="${app_dir}/bin/visionlabel-sam-macos-linux.sh"
+  local cached_installer="${app_dir}/bin/poligome-sam-macos-linux.sh"
   [[ -x "$cached_installer" ]] || fail "${context}: instalador API 2 não foi guardado como executável"
-  grep -Fqx 'VISIONLABEL_SAM_INSTALLER_API=2' "$cached_installer" ||
+  grep -Fqx 'POLIGOME_SAM_INSTALLER_API=2' "$cached_installer" ||
     fail "${context}: cache do instalador não possui o marcador API 2"
   bash -n "$cached_installer" || fail "${context}: instalador em cache tem sintaxe inválida"
 }
@@ -136,18 +136,18 @@ python_log_line="python"
 for python_arg in "$@"; do
   python_log_line+=$'\t'"$python_arg"
 done
-printf '%s\n' "$python_log_line" >>"${VISIONLABEL_TEST_LOG:?}"
+printf '%s\n' "$python_log_line" >>"${POLIGOME_TEST_LOG:?}"
 if [[ "${1:-}" == - && $# -eq 3 ]]; then
   probe_program="$(cat)"
-  printf 'health-model-probe\t%s\n' "${2:-}" >>"$VISIONLABEL_TEST_LOG"
-  if [[ "${VISIONLABEL_TEST_HEALTH_MATCH:-}" == "${2:-}" ]]; then
+  printf 'health-model-probe\t%s\n' "${2:-}" >>"$POLIGOME_TEST_LOG"
+  if [[ "${POLIGOME_TEST_HEALTH_MATCH:-}" == "${2:-}" ]]; then
     [[ "$probe_program" == *'print("offline")'* ]] && printf 'ready\n'
     exit 0
   fi
-  if [[ -f "${VISIONLABEL_TEST_LOG}.connector-running" &&
-        "$(<"${VISIONLABEL_TEST_LOG}.connector-running")" == "${2:-}" ]]; then
-    : >"${VISIONLABEL_TEST_LOG}.connector-stop"
-    printf 'health-model-ready\t%s\n' "${2:-}" >>"$VISIONLABEL_TEST_LOG"
+  if [[ -f "${POLIGOME_TEST_LOG}.connector-running" &&
+        "$(<"${POLIGOME_TEST_LOG}.connector-running")" == "${2:-}" ]]; then
+    : >"${POLIGOME_TEST_LOG}.connector-stop"
+    printf 'health-model-ready\t%s\n' "${2:-}" >>"$POLIGOME_TEST_LOG"
     [[ "$probe_program" == *'print("offline")'* ]] && printf 'ready\n'
     exit 0
   fi
@@ -158,58 +158,58 @@ if [[ "${1:-}" == - && $# -eq 3 ]]; then
   exit 1
 fi
 if [[ "${1:-}" == - && $# -eq 2 ]]; then
-  printf 'port-probe\t%s\n' "${2:-}" >>"$VISIONLABEL_TEST_LOG"
-  [[ "${VISIONLABEL_TEST_PORT_IN_USE:-}" == 1 ]] && exit 0
+  printf 'port-probe\t%s\n' "${2:-}" >>"$POLIGOME_TEST_LOG"
+  [[ "${POLIGOME_TEST_PORT_IN_USE:-}" == 1 ]] && exit 0
   exit 1
 fi
-if [[ "${1:-}" == *visionlabel-sam-local.py && "${2:-}" == --model ]]; then
-  if [[ -n "${VISIONLABEL_TEST_CONNECTOR_FAIL_BEFORE_READY:-}" ]]; then
-    exit "$VISIONLABEL_TEST_CONNECTOR_FAIL_BEFORE_READY"
+if [[ "${1:-}" == *poligome-sam-local.py && "${2:-}" == --model ]]; then
+  if [[ -n "${POLIGOME_TEST_CONNECTOR_FAIL_BEFORE_READY:-}" ]]; then
+    exit "$POLIGOME_TEST_CONNECTOR_FAIL_BEFORE_READY"
   fi
-  printf '%s\n' "${3:-}" >"${VISIONLABEL_TEST_LOG}.connector-running"
+  printf '%s\n' "${3:-}" >"${POLIGOME_TEST_LOG}.connector-running"
   for _attempt in {1..500}; do
-    [[ -e "${VISIONLABEL_TEST_LOG}.connector-stop" ]] &&
-      exit "${VISIONLABEL_TEST_CONNECTOR_EXIT:-0}"
+    [[ -e "${POLIGOME_TEST_LOG}.connector-stop" ]] &&
+      exit "${POLIGOME_TEST_CONNECTOR_EXIT:-0}"
     sleep 0.01
   done
   exit 95
 fi
 if [[ "${1:-}" == "-m" && "${2:-}" == "pip" ]]; then
-  if [[ "${VISIONLABEL_TEST_ALLOW_SAM3_REPAIR:-}" == 1 &&
+  if [[ "${POLIGOME_TEST_ALLOW_SAM3_REPAIR:-}" == 1 &&
         " $* " == *" setuptools<81 "* &&
         " $* " == *" einops "* &&
         " $* " == *" psutil "* &&
         " $* " == *" pycocotools "* ]]; then
-    : >"${VISIONLABEL_TEST_LOG}.sam3-repaired"
-    printf 'sam3-repair\t%s\n' "$*" >>"$VISIONLABEL_TEST_LOG"
+    : >"${POLIGOME_TEST_LOG}.sam3-repaired"
+    printf 'sam3-repair\t%s\n' "$*" >>"$POLIGOME_TEST_LOG"
     exit 0
   fi
-  printf 'unexpected-pip\t%s\n' "$*" >>"$VISIONLABEL_TEST_LOG"
+  printf 'unexpected-pip\t%s\n' "$*" >>"$POLIGOME_TEST_LOG"
   exit 97
 fi
 if [[ "${1:-}" == "-m" && "${2:-}" == "venv" ]]; then
-  printf 'unexpected-venv\t%s\n' "$*" >>"$VISIONLABEL_TEST_LOG"
+  printf 'unexpected-venv\t%s\n' "$*" >>"$POLIGOME_TEST_LOG"
   exit 98
 fi
 if [[ "${1:-}" == -c ]]; then
-  if [[ "${VISIONLABEL_TEST_ALLOW_SAM3_REPAIR:-}" == 1 &&
+  if [[ "${POLIGOME_TEST_ALLOW_SAM3_REPAIR:-}" == 1 &&
         "$2" == *"import einops"* &&
-        ! -e "${VISIONLABEL_TEST_LOG}.sam3-repaired" ]]; then
-    printf 'missing-sam3-runtime-dependencies\n' >>"$VISIONLABEL_TEST_LOG"
+        ! -e "${POLIGOME_TEST_LOG}.sam3-repaired" ]]; then
+    printf 'missing-sam3-runtime-dependencies\n' >>"$POLIGOME_TEST_LOG"
     exit 1
   fi
-  case "${VISIONLABEL_TEST_FAIL_DEEP_IMPORT:-}" in
+  case "${POLIGOME_TEST_FAIL_DEEP_IMPORT:-}" in
     sam2)
       if [[ "$2" == *"from sam2.build_sam import build_sam2"* &&
             "$2" == *"from sam2.sam2_image_predictor import SAM2ImagePredictor"* ]]; then
-        printf 'deep-import-failed\tsam2\n' >>"$VISIONLABEL_TEST_LOG"
+        printf 'deep-import-failed\tsam2\n' >>"$POLIGOME_TEST_LOG"
         exit 1
       fi
       ;;
     sam3)
       if [[ "$2" == *"from sam3.model.sam3_image_processor import Sam3Processor"* &&
             "$2" == *"from sam3.model_builder import build_sam3_image_model"* ]]; then
-        printf 'deep-import-failed\tsam3\n' >>"$VISIONLABEL_TEST_LOG"
+        printf 'deep-import-failed\tsam3\n' >>"$POLIGOME_TEST_LOG"
         exit 1
       fi
       ;;
@@ -222,7 +222,7 @@ cat >"${MOCK_BIN}/curl" <<'MOCK_CURL'
 #!/usr/bin/env bash
 set -u
 if [[ " $* " == *" http://127.0.0.1:7860/health "* ]]; then
-  printf 'health-check\n' >>"${VISIONLABEL_TEST_LOG:?}"
+  printf 'health-check\n' >>"${POLIGOME_TEST_LOG:?}"
   exit 22
 fi
 url=""
@@ -242,32 +242,32 @@ while (( $# > 0 )); do
       ;;
   esac
 done
-if [[ -n "${VISIONLABEL_TEST_EXPECTED_DOWNLOAD:-}" &&
-      "$url" == "$VISIONLABEL_TEST_EXPECTED_DOWNLOAD" &&
+if [[ -n "${POLIGOME_TEST_EXPECTED_DOWNLOAD:-}" &&
+      "$url" == "$POLIGOME_TEST_EXPECTED_DOWNLOAD" &&
       -n "$destination" ]]; then
   mkdir -p "$(dirname "$destination")"
-  truncate -s "${VISIONLABEL_TEST_DOWNLOAD_SIZE_OVERRIDE:-${VISIONLABEL_TEST_EXPECTED_SIZE:?}}" "$destination"
-  printf 'download\t%s\t%s\n' "$url" "$destination" >>"${VISIONLABEL_TEST_LOG:?}"
+  truncate -s "${POLIGOME_TEST_DOWNLOAD_SIZE_OVERRIDE:-${POLIGOME_TEST_EXPECTED_SIZE:?}}" "$destination"
+  printf 'download\t%s\t%s\n' "$url" "$destination" >>"${POLIGOME_TEST_LOG:?}"
   exit 0
 fi
-printf 'unexpected-network\tcurl\t%s\n' "$url" >>"${VISIONLABEL_TEST_LOG:?}"
+printf 'unexpected-network\tcurl\t%s\n' "$url" >>"${POLIGOME_TEST_LOG:?}"
 exit 96
 MOCK_CURL
 
 cat >"${MOCK_BIN}/wget" <<'MOCK_WGET'
 #!/usr/bin/env bash
-printf 'unexpected-network\twget\t%s\n' "$*" >>"${VISIONLABEL_TEST_LOG:?}"
+printf 'unexpected-network\twget\t%s\n' "$*" >>"${POLIGOME_TEST_LOG:?}"
 exit 96
 MOCK_WGET
 
 cat >"${MOCK_BIN}/uname" <<'MOCK_UNAME'
 #!/usr/bin/env bash
-printf '%s\n' "${VISIONLABEL_TEST_UNAME:-Linux}"
+printf '%s\n' "${POLIGOME_TEST_UNAME:-Linux}"
 MOCK_UNAME
 
 cat >"${MOCK_BIN}/nvidia-smi" <<'MOCK_NVIDIA'
 #!/usr/bin/env bash
-printf 'nvidia-smi\t%s\n' "$*" >>"${VISIONLABEL_TEST_LOG:?}"
+printf 'nvidia-smi\t%s\n' "$*" >>"${POLIGOME_TEST_LOG:?}"
 exit 0
 MOCK_NVIDIA
 
@@ -275,31 +275,31 @@ cat >"${MOCK_BIN}/hf" <<'MOCK_HF'
 #!/usr/bin/env bash
 set -u
 if [[ "${1:-}" == auth && "${2:-}" == whoami ]]; then
-  printf 'hf-auth\twhoami\n' >>"${VISIONLABEL_TEST_LOG:?}"
+  printf 'hf-auth\twhoami\n' >>"${POLIGOME_TEST_LOG:?}"
   exit 0
 fi
 if [[ "${1:-}" == download && $# -eq 5 && "${4:-}" == --local-dir ]]; then
   requested="${2}/${3}"
-  if [[ "$requested" == "${VISIONLABEL_TEST_EXPECTED_HF:-}" ]]; then
+  if [[ "$requested" == "${POLIGOME_TEST_EXPECTED_HF:-}" ]]; then
     mkdir -p "$5"
-    truncate -s "${VISIONLABEL_TEST_DOWNLOAD_SIZE_OVERRIDE:-${VISIONLABEL_TEST_EXPECTED_SIZE:?}}" "$5/$3"
-    printf 'hf-download\t%s\t%s\n' "$requested" "$5/$3" >>"${VISIONLABEL_TEST_LOG:?}"
+    truncate -s "${POLIGOME_TEST_DOWNLOAD_SIZE_OVERRIDE:-${POLIGOME_TEST_EXPECTED_SIZE:?}}" "$5/$3"
+    printf 'hf-download\t%s\t%s\n' "$requested" "$5/$3" >>"${POLIGOME_TEST_LOG:?}"
     exit 0
   fi
 fi
-printf 'unexpected-network\thf\t%s\n' "$*" >>"${VISIONLABEL_TEST_LOG:?}"
+printf 'unexpected-network\thf\t%s\n' "$*" >>"${POLIGOME_TEST_LOG:?}"
 exit 96
 MOCK_HF
 
 cat >"${MOCK_BIN}/open" <<'MOCK_OPEN'
 #!/usr/bin/env bash
-printf 'open\t%s\n' "$*" >>"${VISIONLABEL_TEST_LOG:?}"
+printf 'open\t%s\n' "$*" >>"${POLIGOME_TEST_LOG:?}"
 exit 0
 MOCK_OPEN
 
 cat >"${MOCK_BIN}/xdg-open" <<'MOCK_XDG_OPEN'
 #!/usr/bin/env bash
-printf 'xdg-open\t%s\n' "$*" >>"${VISIONLABEL_TEST_LOG:?}"
+printf 'xdg-open\t%s\n' "$*" >>"${POLIGOME_TEST_LOG:?}"
 exit 0
 MOCK_XDG_OPEN
 
@@ -315,21 +315,21 @@ run_isolated() {
   env -i \
     HOME="$home_dir" \
     PATH="${MOCK_BIN}:/usr/bin:/bin" \
-    VISIONLABEL_SITE_URL="https://visionlabel.test" \
-    VISIONLABEL_ASSET_BASE_URL="https://assets.visionlabel.test/public" \
-    VISIONLABEL_CONNECTOR_PATH="$CONNECTOR_SOURCE" \
-    VISIONLABEL_INSTALLER_PATH="${VISIONLABEL_INSTALLER_PATH:-}" \
-    VISIONLABEL_TEST_LOG="$log" \
-    VISIONLABEL_TEST_EXPECTED_DOWNLOAD="${VISIONLABEL_TEST_EXPECTED_DOWNLOAD:-}" \
-    VISIONLABEL_TEST_EXPECTED_HF="${VISIONLABEL_TEST_EXPECTED_HF:-}" \
-    VISIONLABEL_TEST_EXPECTED_SIZE="${VISIONLABEL_TEST_EXPECTED_SIZE:-}" \
-    VISIONLABEL_TEST_DOWNLOAD_SIZE_OVERRIDE="${VISIONLABEL_TEST_DOWNLOAD_SIZE_OVERRIDE:-}" \
-    VISIONLABEL_TEST_ALLOW_SAM3_REPAIR="${VISIONLABEL_TEST_ALLOW_SAM3_REPAIR:-}" \
-    VISIONLABEL_TEST_FAIL_DEEP_IMPORT="${VISIONLABEL_TEST_FAIL_DEEP_IMPORT:-}" \
-    VISIONLABEL_TEST_HEALTH_MATCH="${VISIONLABEL_TEST_HEALTH_MATCH:-}" \
-    VISIONLABEL_TEST_PORT_IN_USE="${VISIONLABEL_TEST_PORT_IN_USE:-}" \
-    VISIONLABEL_TEST_CONNECTOR_EXIT="${VISIONLABEL_TEST_CONNECTOR_EXIT:-}" \
-    VISIONLABEL_TEST_CONNECTOR_FAIL_BEFORE_READY="${VISIONLABEL_TEST_CONNECTOR_FAIL_BEFORE_READY:-}" \
+    POLIGOME_SITE_URL="https://poligome.test" \
+    POLIGOME_ASSET_BASE_URL="https://assets.poligome.test/public" \
+    POLIGOME_CONNECTOR_PATH="$CONNECTOR_SOURCE" \
+    POLIGOME_INSTALLER_PATH="${POLIGOME_INSTALLER_PATH:-}" \
+    POLIGOME_TEST_LOG="$log" \
+    POLIGOME_TEST_EXPECTED_DOWNLOAD="${POLIGOME_TEST_EXPECTED_DOWNLOAD:-}" \
+    POLIGOME_TEST_EXPECTED_HF="${POLIGOME_TEST_EXPECTED_HF:-}" \
+    POLIGOME_TEST_EXPECTED_SIZE="${POLIGOME_TEST_EXPECTED_SIZE:-}" \
+    POLIGOME_TEST_DOWNLOAD_SIZE_OVERRIDE="${POLIGOME_TEST_DOWNLOAD_SIZE_OVERRIDE:-}" \
+    POLIGOME_TEST_ALLOW_SAM3_REPAIR="${POLIGOME_TEST_ALLOW_SAM3_REPAIR:-}" \
+    POLIGOME_TEST_FAIL_DEEP_IMPORT="${POLIGOME_TEST_FAIL_DEEP_IMPORT:-}" \
+    POLIGOME_TEST_HEALTH_MATCH="${POLIGOME_TEST_HEALTH_MATCH:-}" \
+    POLIGOME_TEST_PORT_IN_USE="${POLIGOME_TEST_PORT_IN_USE:-}" \
+    POLIGOME_TEST_CONNECTOR_EXIT="${POLIGOME_TEST_CONNECTOR_EXIT:-}" \
+    POLIGOME_TEST_CONNECTOR_FAIL_BEFORE_READY="${POLIGOME_TEST_CONNECTOR_FAIL_BEFORE_READY:-}" \
     "$@"
 }
 
@@ -338,7 +338,7 @@ expected_connector_call() {
   local app_dir="$2"
   local checkpoint="${app_dir}/models/${model}/${CHECKPOINT_NAME[$model]}"
   local call="python"
-  call+=$'\t'"${app_dir}/visionlabel-sam-local.py"
+  call+=$'\t'"${app_dir}/poligome-sam-local.py"
   call+=$'\t--model\t'"${model}"
   call+=$'\t--checkpoint\t'"${checkpoint}"
   if [[ -n "${MODEL_CONFIG[$model]}" ]]; then
@@ -352,7 +352,7 @@ prepare_model_home() {
   local model="$1"
   local home_dir="$2"
   local family="${MODEL_FAMILY[$model]}"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local venv_dir="${app_dir}/venvs/${family}"
   local checkpoint="${app_dir}/models/${model}/${CHECKPOINT_NAME[$model]}"
   mkdir -p "${venv_dir}/bin" "$(dirname "$checkpoint")"
@@ -366,7 +366,7 @@ prepare_model_home() {
 create_sparse_checkpoint() {
   local model="$1"
   local home_dir="$2"
-  local checkpoint="${home_dir}/.visionlabel-sam/models/${model}/${CHECKPOINT_NAME[$model]}"
+  local checkpoint="${home_dir}/.poligome-sam/models/${model}/${CHECKPOINT_NAME[$model]}"
   mkdir -p "$(dirname "$checkpoint")"
   truncate -s "${CHECKPOINT_SIZE[$model]}" "$checkpoint"
 }
@@ -375,7 +375,7 @@ test_bash_model() {
   local model="$1"
   local safe_model="${model//[^[:alnum:]]/_}"
   local home_dir="${TEMP_ROOT}/home-${safe_model}"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local install_log="${TEMP_ROOT}/${safe_model}-install.log"
   local start_log="${TEMP_ROOT}/${safe_model}-start.log"
   local output
@@ -385,9 +385,9 @@ test_bash_model() {
   prepare_model_home "$model" "$home_dir"
   : >"$install_log"
   if ! output="$(
-    VISIONLABEL_TEST_EXPECTED_DOWNLOAD="${CHECKPOINT_URL[$model]}" \
-    VISIONLABEL_TEST_EXPECTED_HF="facebook/sam3/${CHECKPOINT_NAME[$model]}" \
-    VISIONLABEL_TEST_EXPECTED_SIZE="${CHECKPOINT_SIZE[$model]}" \
+    POLIGOME_TEST_EXPECTED_DOWNLOAD="${CHECKPOINT_URL[$model]}" \
+    POLIGOME_TEST_EXPECTED_HF="facebook/sam3/${CHECKPOINT_NAME[$model]}" \
+    POLIGOME_TEST_EXPECTED_SIZE="${CHECKPOINT_SIZE[$model]}" \
       run_isolated "$home_dir" "$install_log" bash "$INSTALLER" "$model" 2>&1
   )"; then
     printf '%s\n' "$output" >&2
@@ -398,7 +398,7 @@ test_bash_model() {
     fail "${model}: seleção não foi persistida corretamente"
   [[ ! -e "${app_dir}/pending-model.txt" ]] ||
     fail "${model}: instalação concluída deixou pending-model.txt para trás"
-  cmp -s "$CONNECTOR_SOURCE" "${app_dir}/visionlabel-sam-local.py" ||
+  cmp -s "$CONNECTOR_SOURCE" "${app_dir}/poligome-sam-local.py" ||
     fail "${model}: conector local não foi instalado integralmente"
   assert_installer_cache "$app_dir" "instalação de ${model}"
   [[ -s "$checkpoint" ]] || fail "${model}: checkpoint simulado não foi ativado"
@@ -432,7 +432,7 @@ test_bash_model() {
 test_partial_installation_auto_resume() {
   local model="sam2.1-hiera-small"
   local home_dir="${TEMP_ROOT}/home-partial"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local interrupted_log="${TEMP_ROOT}/partial-interrupted.log"
   local resume_log="${TEMP_ROOT}/partial-resume.log"
   local output
@@ -442,7 +442,7 @@ test_partial_installation_auto_resume() {
   create_sparse_checkpoint "$model" "$home_dir"
   : >"$interrupted_log"
   if output="$(
-    VISIONLABEL_TEST_FAIL_DEEP_IMPORT="sam2" \
+    POLIGOME_TEST_FAIL_DEEP_IMPORT="sam2" \
       run_isolated "$home_dir" "$interrupted_log" bash "$INSTALLER" "$model" 2>&1
   )"; then
     fail "falha profunda simulada não interrompeu a instalação de ${model}"
@@ -472,7 +472,7 @@ test_partial_installation_auto_resume() {
 test_selected_incomplete_auto_resume() {
   local model="sam2.1-hiera-small"
   local home_dir="${TEMP_ROOT}/home-selected-incomplete"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local log="${TEMP_ROOT}/selected-incomplete-resume.log"
   local output
 
@@ -481,13 +481,13 @@ test_selected_incomplete_auto_resume() {
   printf '%s\n' "$model" >"${app_dir}/selected-model.txt"
   : >"$log"
   if ! output="$(
-    VISIONLABEL_INSTALLER_PATH="$INSTALLER" \
+    POLIGOME_INSTALLER_PATH="$INSTALLER" \
       run_isolated "$home_dir" "$log" bash "$STARTER" 2>&1
   )"; then
     printf '%s\n' "$output" >&2
     fail "iniciador não reparou instalação selecionada incompleta de ${model}"
   fi
-  cmp -s "$CONNECTOR_SOURCE" "${app_dir}/visionlabel-sam-local.py" ||
+  cmp -s "$CONNECTOR_SOURCE" "${app_dir}/poligome-sam-local.py" ||
     fail "retomada de ${model} não restaurou o conector"
   [[ ! -e "${app_dir}/pending-model.txt" ]] ||
     fail "retomada de seleção incompleta deixou estado pendente"
@@ -499,7 +499,7 @@ test_selected_incomplete_auto_resume() {
 test_empty_state_delegates_to_installer_menu() {
   local model="sam2.1-hiera-base-plus"
   local home_dir="${TEMP_ROOT}/home-empty-selection"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local log="${TEMP_ROOT}/empty-selection.log"
   local output
 
@@ -510,7 +510,7 @@ test_empty_state_delegates_to_installer_menu() {
   : >"$log"
   if ! output="$(
     printf '3\n' |
-      VISIONLABEL_INSTALLER_PATH="$INSTALLER" \
+      POLIGOME_INSTALLER_PATH="$INSTALLER" \
         run_isolated "$home_dir" "$log" bash "$STARTER" 2>&1
   )"; then
     printf '%s\n' "$output" >&2
@@ -528,7 +528,7 @@ test_empty_state_delegates_to_installer_menu() {
 test_sam3_runtime_dependency_repair() {
   local model="sam3-concepts"
   local home_dir="${TEMP_ROOT}/home-sam3-repair"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local log="${TEMP_ROOT}/sam3-repair.log"
   local output
   local repair_line
@@ -537,7 +537,7 @@ test_sam3_runtime_dependency_repair() {
   create_sparse_checkpoint "$model" "$home_dir"
   : >"$log"
   if ! output="$(
-    VISIONLABEL_TEST_ALLOW_SAM3_REPAIR=1 \
+    POLIGOME_TEST_ALLOW_SAM3_REPAIR=1 \
       run_isolated "$home_dir" "$log" bash "$INSTALLER" "$model" 2>&1
   )"; then
     printf '%s\n' "$output" >&2
@@ -568,13 +568,13 @@ test_ready_markers_require_deep_imports() {
     family="${MODEL_FAMILY[$model]}"
     safe_model="${model//[^[:alnum:]]/_}"
     home_dir="${TEMP_ROOT}/home-deep-${safe_model}"
-    app_dir="${home_dir}/.visionlabel-sam"
+    app_dir="${home_dir}/.poligome-sam"
     log="${TEMP_ROOT}/deep-${safe_model}.log"
     prepare_model_home "$model" "$home_dir"
     create_sparse_checkpoint "$model" "$home_dir"
     : >"$log"
     if output="$(
-      VISIONLABEL_TEST_FAIL_DEEP_IMPORT="$family" \
+      POLIGOME_TEST_FAIL_DEEP_IMPORT="$family" \
         run_isolated "$home_dir" "$log" bash "$INSTALLER" "$model" 2>&1
     )"; then
       fail "marker ${family} foi aceito apesar da falha no import profundo"
@@ -593,7 +593,7 @@ test_ready_markers_require_deep_imports() {
 test_truncated_download_is_fail_closed() {
   local model="sam2.1-hiera-tiny"
   local home_dir="${TEMP_ROOT}/home-truncated-download"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local checkpoint="${app_dir}/models/${model}/${CHECKPOINT_NAME[$model]}"
   local log="${TEMP_ROOT}/truncated-download.log"
   local output
@@ -601,9 +601,9 @@ test_truncated_download_is_fail_closed() {
   prepare_model_home "$model" "$home_dir"
   : >"$log"
   if output="$(
-    VISIONLABEL_TEST_EXPECTED_DOWNLOAD="${CHECKPOINT_URL[$model]}" \
-    VISIONLABEL_TEST_EXPECTED_SIZE="${CHECKPOINT_SIZE[$model]}" \
-    VISIONLABEL_TEST_DOWNLOAD_SIZE_OVERRIDE=17 \
+    POLIGOME_TEST_EXPECTED_DOWNLOAD="${CHECKPOINT_URL[$model]}" \
+    POLIGOME_TEST_EXPECTED_SIZE="${CHECKPOINT_SIZE[$model]}" \
+    POLIGOME_TEST_DOWNLOAD_SIZE_OVERRIDE=17 \
       run_isolated "$home_dir" "$log" bash "$INSTALLER" "$model" 2>&1
   )"; then
     fail "download truncado de ${model} foi aceito"
@@ -621,7 +621,7 @@ test_truncated_download_is_fail_closed() {
 test_health_requires_matching_model() {
   local model="sam2.1-hiera-base-plus"
   local home_dir="${TEMP_ROOT}/home-health-match"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local log="${TEMP_ROOT}/health-match.log"
   local expected_call
   local output
@@ -630,7 +630,7 @@ test_health_requires_matching_model() {
   create_sparse_checkpoint "$model" "$home_dir"
   : >"$log"
   if ! output="$(
-    VISIONLABEL_TEST_HEALTH_MATCH="$model" \
+    POLIGOME_TEST_HEALTH_MATCH="$model" \
       run_isolated "$home_dir" "$log" bash "$INSTALLER" "$model" 2>&1
   )"; then
     printf '%s\n' "$output" >&2
@@ -645,14 +645,14 @@ test_health_requires_matching_model() {
     fail "health compatível não preservou a seleção"
 
   home_dir="${TEMP_ROOT}/home-health-mismatch"
-  app_dir="${home_dir}/.visionlabel-sam"
+  app_dir="${home_dir}/.poligome-sam"
   log="${TEMP_ROOT}/health-mismatch.log"
   prepare_model_home "$model" "$home_dir"
   create_sparse_checkpoint "$model" "$home_dir"
   : >"$log"
   if output="$(
-    VISIONLABEL_TEST_HEALTH_MATCH="outro-modelo" \
-    VISIONLABEL_TEST_PORT_IN_USE=1 \
+    POLIGOME_TEST_HEALTH_MATCH="outro-modelo" \
+    POLIGOME_TEST_PORT_IN_USE=1 \
       run_isolated "$home_dir" "$log" bash "$INSTALLER" "$model" 2>&1
   )"; then
     fail "porta ocupada por outro modelo foi tratada como health compatível"
@@ -667,7 +667,7 @@ test_health_requires_matching_model() {
 test_connector_must_be_ready_before_commit() {
   local model="sam2.1-hiera-tiny"
   local home_dir="${TEMP_ROOT}/home-connector-not-ready"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local log="${TEMP_ROOT}/connector-not-ready.log"
   local output
 
@@ -675,7 +675,7 @@ test_connector_must_be_ready_before_commit() {
   create_sparse_checkpoint "$model" "$home_dir"
   : >"$log"
   if output="$(
-    VISIONLABEL_TEST_CONNECTOR_FAIL_BEFORE_READY=41 \
+    POLIGOME_TEST_CONNECTOR_FAIL_BEFORE_READY=41 \
       run_isolated "$home_dir" "$log" bash "$INSTALLER" "$model" 2>&1
   )"; then
     fail "conector encerrado antes de ready foi promovido a instalação concluída"
@@ -693,7 +693,7 @@ test_connector_must_be_ready_before_commit() {
 test_connector_exit_is_propagated() {
   local model="sam2.1-hiera-tiny"
   local home_dir="${TEMP_ROOT}/home-connector-exit"
-  local app_dir="${home_dir}/.visionlabel-sam"
+  local app_dir="${home_dir}/.poligome-sam"
   local install_log="${TEMP_ROOT}/connector-exit-install.log"
   local start_log="${TEMP_ROOT}/connector-exit-start.log"
   local output
@@ -703,7 +703,7 @@ test_connector_exit_is_propagated() {
   create_sparse_checkpoint "$model" "$home_dir"
   : >"$install_log"
   if output="$(
-    VISIONLABEL_TEST_CONNECTOR_EXIT=23 \
+    POLIGOME_TEST_CONNECTOR_EXIT=23 \
       run_isolated "$home_dir" "$install_log" bash "$INSTALLER" "$model" 2>&1
   )"; then
     status=0
@@ -719,7 +719,7 @@ test_connector_exit_is_propagated() {
 
   : >"$start_log"
   if output="$(
-    VISIONLABEL_TEST_CONNECTOR_EXIT=29 \
+    POLIGOME_TEST_CONNECTOR_EXIT=29 \
       run_isolated "$home_dir" "$start_log" bash "$STARTER" 2>&1
   )"; then
     status=0
@@ -827,8 +827,8 @@ test_windows_static_matrix() {
   assert_contains "$starter_normalization" 'if /I "!MODEL_ID!"=="sam3" (' "alias SAM 3 no iniciador Windows"
   assert_contains "$installer_source" 'goto :install_wsl_model' "roteamento WSL do instalador Windows"
   assert_contains "$starter_source" 'goto :start_wsl_model' "roteamento WSL do iniciador Windows"
-  assert_contains "$installer_source" 'set "VISIONLABEL_SAM_WINDOWS_INSTALLER_API=2"' "marker do instalador Windows"
-  assert_contains "$starter_source" 'set "VISIONLABEL_SAM_WINDOWS_STARTER_API=2"' "marker do iniciador Windows"
+  assert_contains "$installer_source" 'set "POLIGOME_SAM_WINDOWS_INSTALLER_API=2"' "marker do instalador Windows"
+  assert_contains "$starter_source" 'set "POLIGOME_SAM_WINDOWS_STARTER_API=2"' "marker do iniciador Windows"
 
   assert_before "$installer_source" 'call :cache_windows_installer' 'call :stage_windows_selection' "cache do BAT antes do estado pendente"
   assert_before "$installer_source" 'call :stage_windows_selection' 'goto :install_wsl_model' "pending antes de qualquer instalação Windows"
@@ -839,10 +839,10 @@ test_windows_static_matrix() {
   assert_contains "$starter_source" 'if exist "%PENDING_MODEL_FILE%" (' "detecção de pending no iniciador Windows"
   assert_contains "$starter_source" 'call "!INSTALLER!" "!MODEL_ID!"' "retomada Windows com modelo pendente"
   assert_contains "$starter_source" 'exit /b !RESUME_EXIT!' "propagação do resultado da retomada Windows"
-  assert_contains "$starter_source" 'set "CACHED_INSTALLER=%APP_DIR%\bin\visionlabel-sam-windows.bat"' "fallback para BAT Windows em cache"
-  assert_contains "$starter_source" 'VISIONLABEL_SAM_WINDOWS_INSTALLER_API=2' "validação exata do BAT Windows em cache"
+  assert_contains "$starter_source" 'set "CACHED_INSTALLER=%APP_DIR%\bin\poligome-sam-windows.bat"' "fallback para BAT Windows em cache"
+  assert_contains "$starter_source" 'POLIGOME_SAM_WINDOWS_INSTALLER_API=2' "validação exata do BAT Windows em cache"
   for block in "$starter_health"; do
-    assert_contains "$block" "VisionLabel SAM local" "identidade do health Windows"
+    assert_contains "$block" "Poligome SAM local" "identidade do health Windows"
     assert_contains "$block" "api_version" "versão do health Windows"
     assert_contains "$block" "model_id" "modelo do health Windows"
     assert_contains "$block" "loading" "estado loading do health Windows"
@@ -855,25 +855,25 @@ test_windows_static_matrix() {
   assert_contains "$starter_source" 'set "RESUME_EXIT=!ERRORLEVEL!"' "captura da saída da retomada Windows"
 
   for block in "$installer_wsl_urls" "$starter_wsl_urls"; do
-    assert_contains "$block" 'set "VISIONLABEL_SITE_URL=!SITE_URL!"' "site propagado ao WSL"
+    assert_contains "$block" 'set "POLIGOME_SITE_URL=!SITE_URL!"' "site propagado ao WSL"
     assert_contains "$block" 'if defined ASSET_BASE_OVERRIDDEN (' "override de assets condicionado no WSL"
-    assert_contains "$block" 'set "VISIONLABEL_ASSET_BASE_URL=!ASSET_BASE_URL!"' "override explícito propagado ao WSL"
-    assert_contains "$block" 'set "VISIONLABEL_ASSET_BASE_URL="' "asset default removido antes do WSL"
+    assert_contains "$block" 'set "POLIGOME_ASSET_BASE_URL=!ASSET_BASE_URL!"' "override explícito propagado ao WSL"
+    assert_contains "$block" 'set "POLIGOME_ASSET_BASE_URL="' "asset default removido antes do WSL"
     assert_contains "$block" 'set "WSLENV=!WSL_URL_VARIABLES!' "lista condicional exportada ao WSL"
   done
-  assert_contains "$installer_wsl" '$VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL/visionlabel-sam-macos-linux.sh' "bootstrap do instalador WSL separado do override do conector"
-  assert_contains "$starter_wsl" '$VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL/visionlabel-sam-start-macos-linux.sh' "bootstrap do iniciador WSL separado do override do conector"
-  [[ "$installer_wsl" != *'VISIONLABEL_ASSET_BASE_URL=$VISIONLABEL_ASSET_BASE_URL bash'* ]] ||
+  assert_contains "$installer_wsl" '$POLIGOME_BOOTSTRAP_ASSET_BASE_URL/poligome-sam-macos-linux.sh' "bootstrap do instalador WSL separado do override do conector"
+  assert_contains "$starter_wsl" '$POLIGOME_BOOTSTRAP_ASSET_BASE_URL/poligome-sam-start-macos-linux.sh' "bootstrap do iniciador WSL separado do override do conector"
+  [[ "$installer_wsl" != *'POLIGOME_ASSET_BASE_URL=$POLIGOME_ASSET_BASE_URL bash'* ]] ||
     fail "instalador WSL força asset default e contorna o pin do conector"
-  [[ "$starter_wsl" != *'VISIONLABEL_ASSET_BASE_URL=$VISIONLABEL_ASSET_BASE_URL bash'* ]] ||
+  [[ "$starter_wsl" != *'POLIGOME_ASSET_BASE_URL=$POLIGOME_ASSET_BASE_URL bash'* ]] ||
     fail "iniciador WSL força asset default e contorna o pin do conector"
   assert_contains "$installer_wsl" 'valid_installer $final' "fallback para instalador WSL em cache"
   assert_contains "$starter_wsl" 'valid_launcher $final' "fallback para iniciador WSL em cache"
-  assert_contains "$installer_wsl" "grep -Fxq 'VISIONLABEL_SAM_INSTALLER_API=2'" "marker exato do instalador WSL"
-  assert_contains "$starter_wsl" "grep -Fxq 'VISIONLABEL_SAM_STARTER_API=2'" "marker exato do iniciador WSL"
+  assert_contains "$installer_wsl" "grep -Fxq 'POLIGOME_SAM_INSTALLER_API=2'" "marker exato do instalador WSL"
+  assert_contains "$starter_wsl" "grep -Fxq 'POLIGOME_SAM_STARTER_API=2'" "marker exato do iniciador WSL"
   assert_contains "$installer_wsl" 'monitor_commit & monitor_pid=' "espelhamento assíncrono da seleção WSL pronta"
-  assert_contains "$installer_wsl" 'mv -f $VISIONLABEL_WINDOWS_PENDING_FILE $VISIONLABEL_WINDOWS_SELECTED_FILE' "commit Windows no ready confirmado pelo Bash"
-  assert_contains "$installer_wsl_urls" 'VISIONLABEL_WINDOWS_PENDING_FILE/p:VISIONLABEL_WINDOWS_SELECTED_FILE/p' "tradução segura dos caminhos de estado Windows para WSL"
+  assert_contains "$installer_wsl" 'mv -f $POLIGOME_WINDOWS_PENDING_FILE $POLIGOME_WINDOWS_SELECTED_FILE' "commit Windows no ready confirmado pelo Bash"
+  assert_contains "$installer_wsl_urls" 'POLIGOME_WINDOWS_PENDING_FILE/p:POLIGOME_WINDOWS_SELECTED_FILE/p' "tradução segura dos caminhos de estado Windows para WSL"
   assert_contains "$installer_wsl" "--proto '=https' --proto-redir '=https'" "HTTPS restrito no instalador WSL"
   assert_contains "$starter_wsl" "--proto '=https' --proto-redir '=https'" "HTTPS restrito no iniciador WSL"
   for file in "$WINDOWS_INSTALLER" "$WINDOWS_STARTER"; do
@@ -906,7 +906,7 @@ test_pinned_default_connector() {
   installer_source="$(<"$INSTALLER")"
   connector_sha="$(sha256sum "$CONNECTOR_SOURCE" | awk '{print $1}')"
   assert_contains "$installer_source" \
-    'DEFAULT_CONNECTOR_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/visionlabel-sam-local.py"' \
+    'DEFAULT_CONNECTOR_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/poligome-sam-local.py"' \
     "URL imutável do conector padrão"
   assert_contains "$installer_source" \
     "DEFAULT_CONNECTOR_SHA256=\"${connector_sha}\"" \

@@ -1,41 +1,41 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VISIONLABEL_SAM_STARTER_API=2
+POLIGOME_SAM_STARTER_API=2
 
-DEFAULT_SITE_URL="https://visionlabel-anotador.eduardo1089.chatgpt.site"
+DEFAULT_SITE_URL="https://www.poligome.com"
 DEFAULT_ASSET_BASE_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/main/public"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SITE_URL="${VISIONLABEL_SITE_URL:-${DEFAULT_SITE_URL}}"
+SITE_URL="${POLIGOME_SITE_URL:-${DEFAULT_SITE_URL}}"
 SITE_URL="${SITE_URL%/}"
-ASSET_BASE_URL="${VISIONLABEL_ASSET_BASE_URL:-${DEFAULT_ASSET_BASE_URL}}"
+ASSET_BASE_URL="${POLIGOME_ASSET_BASE_URL:-${DEFAULT_ASSET_BASE_URL}}"
 ASSET_BASE_URL="${ASSET_BASE_URL%/}"
-APP_DIR="${HOME}/.visionlabel-sam"
+APP_DIR="${HOME}/.poligome-sam"
 SELECTED_MODEL_FILE="${APP_DIR}/selected-model.txt"
 PENDING_MODEL_FILE="${APP_DIR}/pending-model.txt"
-CONNECTOR="${APP_DIR}/visionlabel-sam-local.py"
-INSTALLER_CACHE="${APP_DIR}/bin/visionlabel-sam-macos-linux.sh"
+CONNECTOR="${APP_DIR}/poligome-sam-local.py"
+INSTALLER_CACHE="${APP_DIR}/bin/poligome-sam-macos-linux.sh"
 PORT="7860"
-STARTUP_TIMEOUT="${VISIONLABEL_STARTUP_TIMEOUT:-1800}"
+STARTUP_TIMEOUT="${POLIGOME_STARTUP_TIMEOUT:-1800}"
 SITE_ORIGIN=""
 
 usage() {
   cat <<'EOF'
-VisionLabel SAM local — iniciar ou retomar o modelo selecionado
+Poligome SAM local — iniciar ou retomar o modelo selecionado
 
 Uso:
-  bash visionlabel-sam-start-macos-linux.sh
-  bash visionlabel-sam-start-macos-linux.sh --help
+  bash poligome-sam-start-macos-linux.sh
+  bash poligome-sam-start-macos-linux.sh --help
 
-O iniciador usa o modelo salvo em ~/.visionlabel-sam/selected-model.txt. Uma
-instalação interrompida é retomada por ~/.visionlabel-sam/pending-model.txt.
+O iniciador usa o modelo salvo em ~/.poligome-sam/selected-model.txt. Uma
+instalação interrompida é retomada por ~/.poligome-sam/pending-model.txt.
 Sem nenhum estado salvo, o menu do instalador é aberto automaticamente.
 
 Variáveis opcionais:
-  VISIONLABEL_SITE_URL        URL HTTPS aberta no navegador e aceita no CORS
-  VISIONLABEL_ASSET_BASE_URL  origem HTTPS pública dos arquivos do instalador
-  VISIONLABEL_INSTALLER_PATH  instalador local explícito para desenvolvimento/offline
-  VISIONLABEL_STARTUP_TIMEOUT segundos máximos para o primeiro carregamento (padrão: 1800)
+  POLIGOME_SITE_URL        URL HTTPS aberta no navegador e aceita no CORS
+  POLIGOME_ASSET_BASE_URL  origem HTTPS pública dos arquivos do instalador
+  POLIGOME_INSTALLER_PATH  instalador local explícito para desenvolvimento/offline
+  POLIGOME_STARTUP_TIMEOUT segundos máximos para o primeiro carregamento (padrão: 1800)
 EOF
 }
 
@@ -109,7 +109,7 @@ validate_installer() {
   IFS= read -r first_line <"$path" || return 1
   [[ "$first_line" == '#!/usr/bin/env bash' ]] || return 1
   bash -n "$path" >/dev/null 2>&1 || return 1
-  grep -Fxq -- 'VISIONLABEL_SAM_INSTALLER_API=2' "$path" || return 1
+  grep -Fxq -- 'POLIGOME_SAM_INSTALLER_API=2' "$path" || return 1
 }
 
 cache_installer_from_file() {
@@ -131,13 +131,13 @@ cache_installer_from_file() {
 }
 
 ensure_installer() {
-  local sibling_installer="${SCRIPT_DIR}/visionlabel-sam-macos-linux.sh"
-  local installer_url="${ASSET_BASE_URL}/visionlabel-sam-macos-linux.sh"
+  local sibling_installer="${SCRIPT_DIR}/poligome-sam-macos-linux.sh"
+  local installer_url="${ASSET_BASE_URL}/poligome-sam-macos-linux.sh"
   local partial="${INSTALLER_CACHE}.part.$$"
 
-  if [[ -n "${VISIONLABEL_INSTALLER_PATH:-}" ]]; then
-    printf 'Usando o instalador local informado em VISIONLABEL_INSTALLER_PATH...\n'
-    cache_installer_from_file "$VISIONLABEL_INSTALLER_PATH"
+  if [[ -n "${POLIGOME_INSTALLER_PATH:-}" ]]; then
+    printf 'Usando o instalador local informado em POLIGOME_INSTALLER_PATH...\n'
+    cache_installer_from_file "$POLIGOME_INSTALLER_PATH"
     return 0
   fi
 
@@ -153,7 +153,7 @@ ensure_installer() {
   fi
 
   require_https "$ASSET_BASE_URL"
-  printf 'Baixando o instalador canônico do VisionLabel para o cache local...\n'
+  printf 'Baixando o instalador canônico do Poligome para o cache local...\n'
   mkdir -p "$(dirname "$INSTALLER_CACHE")"
   if ! download_to_file "$installer_url" "$partial"; then
     rm -f "$partial"
@@ -170,9 +170,9 @@ ensure_installer() {
 resume_installation() {
   local model_id="$1"
   local reason="$2"
-  local installer_env=(VISIONLABEL_SITE_URL="$SITE_URL")
-  if [[ -n "${VISIONLABEL_ASSET_BASE_URL:-}" ]]; then
-    installer_env+=(VISIONLABEL_ASSET_BASE_URL="$ASSET_BASE_URL")
+  local installer_env=(POLIGOME_SITE_URL="$SITE_URL")
+  if [[ -n "${POLIGOME_ASSET_BASE_URL:-}" ]]; then
+    installer_env+=(POLIGOME_ASSET_BASE_URL="$ASSET_BASE_URL")
   fi
   printf '\n%s\n' "$reason"
   ensure_installer
@@ -331,7 +331,7 @@ try:
 except Exception:
     print("offline")
     raise SystemExit(0)
-if payload.get("service") != "VisionLabel SAM local" or payload.get("api_version") != 2:
+if payload.get("service") != "Poligome SAM local" or payload.get("api_version") != 2:
     print("mismatch")
 elif payload.get("model_id") != expected_model:
     print("mismatch")
@@ -409,7 +409,7 @@ run_connector_transactionally() {
   fi
   args+=(--device auto --port "$PORT")
   printf 'Iniciando o conector e aguardando %s ficar pronto...\n' "$MODEL_ID"
-  VISIONLABEL_ALLOWED_ORIGINS="${SITE_ORIGIN},http://localhost:5173,http://127.0.0.1:5173" \
+  POLIGOME_ALLOWED_ORIGINS="${SITE_ORIGIN},http://localhost:5173,http://127.0.0.1:5173" \
     "$PYTHON" "${args[@]}" &
   CONNECTOR_PID=$!
 
@@ -485,7 +485,7 @@ if (( $# != 0 )); then
 fi
 
 [[ "$STARTUP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] ||
-  fail "VISIONLABEL_STARTUP_TIMEOUT deve ser um número inteiro positivo de segundos."
+  fail "POLIGOME_STARTUP_TIMEOUT deve ser um número inteiro positivo de segundos."
 
 configure_site_origin
 
@@ -512,7 +512,7 @@ if ! runtime_is_complete; then
 fi
 
 printf '\n==========================================\n'
-printf ' VisionLabel SAM — %s\n' "$MODEL_ID"
+printf ' Poligome SAM — %s\n' "$MODEL_ID"
 printf '==========================================\n\n'
 
 case "$(server_state)" in

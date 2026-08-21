@@ -1,21 +1,21 @@
 @echo off
 chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
-title VisionLabel SAM local - instalar modelo
-set "VISIONLABEL_SAM_WINDOWS_INSTALLER_API=2"
+title Poligome SAM local - instalar modelo
+set "POLIGOME_SAM_WINDOWS_INSTALLER_API=2"
 
-set "DEFAULT_SITE_URL=https://visionlabel-anotador.eduardo1089.chatgpt.site"
+set "DEFAULT_SITE_URL=https://www.poligome.com"
 set "DEFAULT_ASSET_BASE_URL=https://raw.githubusercontent.com/eduardoafonso1089/epiaka/main/public"
-set "DEFAULT_CONNECTOR_URL=https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/visionlabel-sam-local.py"
-set "DEFAULT_CONNECTOR_SHA256=06e4cbeff322eaaefa0ea1a4b779eb8e754bf74ca9e357afb30e50b8450e5207"
-set "SITE_URL=%VISIONLABEL_SITE_URL%"
+set "DEFAULT_CONNECTOR_URL=https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/poligome-sam-local.py"
+set "DEFAULT_CONNECTOR_SHA256=b8fee85c425bcbe745ae4d482494ea3b8c549d69f06641d40949d48c5ca0905d"
+set "SITE_URL=%POLIGOME_SITE_URL%"
 if not defined SITE_URL set "SITE_URL=%DEFAULT_SITE_URL%"
 if "!SITE_URL:~-1!"=="/" set "SITE_URL=!SITE_URL:~0,-1!"
-set "ASSET_BASE_URL=%VISIONLABEL_ASSET_BASE_URL%"
+set "ASSET_BASE_URL=%POLIGOME_ASSET_BASE_URL%"
 if defined ASSET_BASE_URL (
   set "ASSET_BASE_OVERRIDDEN=1"
   if "!ASSET_BASE_URL:~-1!"=="/" set "ASSET_BASE_URL=!ASSET_BASE_URL:~0,-1!"
-  set "CONNECTOR_URL=!ASSET_BASE_URL!/visionlabel-sam-local.py"
+  set "CONNECTOR_URL=!ASSET_BASE_URL!/poligome-sam-local.py"
   set "CONNECTOR_SHA256="
 ) else (
   set "ASSET_BASE_OVERRIDDEN="
@@ -23,9 +23,9 @@ if defined ASSET_BASE_URL (
   set "CONNECTOR_URL=%DEFAULT_CONNECTOR_URL%"
   set "CONNECTOR_SHA256=%DEFAULT_CONNECTOR_SHA256%"
 )
-set "APP_DIR=%LOCALAPPDATA%\VisionLabelSAM"
+set "APP_DIR=%LOCALAPPDATA%\PoligomeSAM"
 set "BIN_DIR=%APP_DIR%\bin"
-set "INSTALLER_CACHE=%BIN_DIR%\visionlabel-sam-windows.bat"
+set "INSTALLER_CACHE=%BIN_DIR%\poligome-sam-windows.bat"
 set "SELECTED_MODEL_FILE=%APP_DIR%\selected-model.txt"
 set "PENDING_MODEL_FILE=%APP_DIR%\pending-model.txt"
 set "PORT=7860"
@@ -154,21 +154,21 @@ if errorlevel 1 exit /b 4
 exit /b 0
 
 :enable_wsl_urls
-set "VISIONLABEL_SITE_URL=!SITE_URL!"
-set "VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL=!ASSET_BASE_URL!"
-set "VISIONLABEL_WINDOWS_PENDING_FILE=!PENDING_MODEL_FILE!"
-set "VISIONLABEL_WINDOWS_SELECTED_FILE=!SELECTED_MODEL_FILE!"
+set "POLIGOME_SITE_URL=!SITE_URL!"
+set "POLIGOME_BOOTSTRAP_ASSET_BASE_URL=!ASSET_BASE_URL!"
+set "POLIGOME_WINDOWS_PENDING_FILE=!PENDING_MODEL_FILE!"
+set "POLIGOME_WINDOWS_SELECTED_FILE=!SELECTED_MODEL_FILE!"
 if defined ASSET_BASE_OVERRIDDEN (
-  set "VISIONLABEL_ASSET_BASE_URL=!ASSET_BASE_URL!"
-  set "WSL_URL_VARIABLES=VISIONLABEL_SITE_URL:VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL:VISIONLABEL_ASSET_BASE_URL"
+  set "POLIGOME_ASSET_BASE_URL=!ASSET_BASE_URL!"
+  set "WSL_URL_VARIABLES=POLIGOME_SITE_URL:POLIGOME_BOOTSTRAP_ASSET_BASE_URL:POLIGOME_ASSET_BASE_URL"
 ) else (
-  set "VISIONLABEL_ASSET_BASE_URL="
-  set "WSL_URL_VARIABLES=VISIONLABEL_SITE_URL:VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL"
+  set "POLIGOME_ASSET_BASE_URL="
+  set "WSL_URL_VARIABLES=POLIGOME_SITE_URL:POLIGOME_BOOTSTRAP_ASSET_BASE_URL"
 )
 if defined WSLENV (
-  set "WSLENV=!WSL_URL_VARIABLES!:VISIONLABEL_WINDOWS_PENDING_FILE/p:VISIONLABEL_WINDOWS_SELECTED_FILE/p:!WSLENV!"
+  set "WSLENV=!WSL_URL_VARIABLES!:POLIGOME_WINDOWS_PENDING_FILE/p:POLIGOME_WINDOWS_SELECTED_FILE/p:!WSLENV!"
 ) else (
-  set "WSLENV=!WSL_URL_VARIABLES!:VISIONLABEL_WINDOWS_PENDING_FILE/p:VISIONLABEL_WINDOWS_SELECTED_FILE/p"
+  set "WSLENV=!WSL_URL_VARIABLES!:POLIGOME_WINDOWS_PENDING_FILE/p:POLIGOME_WINDOWS_SELECTED_FILE/p"
 )
 exit /b 0
 
@@ -195,7 +195,7 @@ if not exist "!BIN_DIR!" (
 copy /Y "%~f0" "!INSTALLER_CACHE!.part" >nul
 if errorlevel 1 exit /b 1
 set "INSTALLER_CANDIDATE=!INSTALLER_CACHE!.part"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$marker='set '+[char]34+'VISIONLABEL_SAM_WINDOWS_INSTALLER_API=2'+[char]34; if (-not (Select-String -LiteralPath $env:INSTALLER_CANDIDATE -SimpleMatch $marker -Quiet)) { exit 1 }; exit 0" >nul 2>nul
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$marker='set '+[char]34+'POLIGOME_SAM_WINDOWS_INSTALLER_API=2'+[char]34; if (-not (Select-String -LiteralPath $env:INSTALLER_CANDIDATE -SimpleMatch $marker -Quiet)) { exit 1 }; exit 0" >nul 2>nul
 if errorlevel 1 (
   del /Q "!INSTALLER_CACHE!.part" >nul 2>nul
   exit /b 1
@@ -222,10 +222,10 @@ exit /b 0
 :install_wsl_model
 echo.
 echo ==========================================
-echo  VisionLabel SAM via WSL2 - !MODEL_ID!
+echo  Poligome SAM via WSL2 - !MODEL_ID!
 echo ==========================================
 echo.
-echo O modelo e as dependências serão mantidos em ~/.visionlabel-sam dentro do WSL2.
+echo O modelo e as dependências serão mantidos em ~/.poligome-sam dentro do WSL2.
 echo Nenhum checkpoint será copiado para a pasta do projeto.
 echo.
 
@@ -241,7 +241,7 @@ echo Baixando por HTTPS o instalador canônico para um arquivo temporário no WS
 echo A seleção será confirmada em !SELECTED_MODEL_FILE! somente após a instalação.
 echo.
 start "" "!SITE_URL!"
-wsl.exe -- bash -lc "set -euo pipefail; set -f; app_dir=$HOME/.visionlabel-sam; install_dir=$app_dir/bin; mkdir -p $install_dir; final=$install_dir/visionlabel-sam-macos-linux.sh; partial=$final.part.$$; runner=$final; wsl_selected=$app_dir/selected-model.txt; wsl_pending=$app_dir/pending-model.txt; wsl_pending_tmp=$wsl_pending.part.$$; downloaded=0; monitor_pid=0; valid_installer() { test -s $1 && grep -Fxq 'VISIONLABEL_SAM_INSTALLER_API=2' $1; }; stage_wsl_pending() { echo !MODEL_ID! >$wsl_pending_tmp; mv -f $wsl_pending_tmp $wsl_pending; }; commit_windows_selection() { local IFS=; if test -f $wsl_pending; then return 1; fi; if test -f $wsl_selected; then wsl_model=$(head -n 1 $wsl_selected | tr -d '\r\n'); else return 1; fi; if test -f $VISIONLABEL_WINDOWS_PENDING_FILE; then windows_model=$(head -n 1 $VISIONLABEL_WINDOWS_PENDING_FILE | tr -d '\r\n'); else return 1; fi; if test x$wsl_model = x!MODEL_ID! && test x$windows_model = x!MODEL_ID!; then mv -f $VISIONLABEL_WINDOWS_PENDING_FILE $VISIONLABEL_WINDOWS_SELECTED_FILE; return 0; fi; return 1; }; monitor_commit() { while true; do if commit_windows_selection; then return 0; fi; sleep 1; done; }; cleanup() { if test $monitor_pid -ne 0; then kill $monitor_pid >/dev/null 2>&1 || true; wait $monitor_pid >/dev/null 2>&1 || true; fi; rm -f $partial $wsl_pending_tmp; }; trap 'cleanup' EXIT HUP INT TERM; if command -v curl >/dev/null 2>&1 && curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 --output $partial $VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL/visionlabel-sam-macos-linux.sh; then downloaded=1; elif command -v wget >/dev/null 2>&1 && wget --https-only --tries=3 --output-document=$partial $VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL/visionlabel-sam-macos-linux.sh; then downloaded=1; fi; if test $downloaded -eq 1 && valid_installer $partial; then runner=$partial; else rm -f $partial; valid_installer $final || exit 1; echo 'Download indisponível ou incompatível; usando o instalador WSL2 API 2 validado em cache.' >&2; fi; stage_wsl_pending; monitor_commit & monitor_pid=$(jobs -p); if VISIONLABEL_SITE_URL=$VISIONLABEL_SITE_URL bash $runner !MODEL_ID!; then run_status=0; else run_status=$?; fi; commit_windows_selection || true; kill $monitor_pid >/dev/null 2>&1 || true; wait $monitor_pid >/dev/null 2>&1 || true; monitor_pid=0; test $run_status -eq 0; if test $runner = $partial; then chmod 700 $partial; mv -f $partial $final; fi; trap - EXIT HUP INT TERM"
+wsl.exe -- bash -lc "set -euo pipefail; set -f; app_dir=$HOME/.poligome-sam; install_dir=$app_dir/bin; mkdir -p $install_dir; final=$install_dir/poligome-sam-macos-linux.sh; partial=$final.part.$$; runner=$final; wsl_selected=$app_dir/selected-model.txt; wsl_pending=$app_dir/pending-model.txt; wsl_pending_tmp=$wsl_pending.part.$$; downloaded=0; monitor_pid=0; valid_installer() { test -s $1 && grep -Fxq 'POLIGOME_SAM_INSTALLER_API=2' $1; }; stage_wsl_pending() { echo !MODEL_ID! >$wsl_pending_tmp; mv -f $wsl_pending_tmp $wsl_pending; }; commit_windows_selection() { local IFS=; if test -f $wsl_pending; then return 1; fi; if test -f $wsl_selected; then wsl_model=$(head -n 1 $wsl_selected | tr -d '\r\n'); else return 1; fi; if test -f $POLIGOME_WINDOWS_PENDING_FILE; then windows_model=$(head -n 1 $POLIGOME_WINDOWS_PENDING_FILE | tr -d '\r\n'); else return 1; fi; if test x$wsl_model = x!MODEL_ID! && test x$windows_model = x!MODEL_ID!; then mv -f $POLIGOME_WINDOWS_PENDING_FILE $POLIGOME_WINDOWS_SELECTED_FILE; return 0; fi; return 1; }; monitor_commit() { while true; do if commit_windows_selection; then return 0; fi; sleep 1; done; }; cleanup() { if test $monitor_pid -ne 0; then kill $monitor_pid >/dev/null 2>&1 || true; wait $monitor_pid >/dev/null 2>&1 || true; fi; rm -f $partial $wsl_pending_tmp; }; trap 'cleanup' EXIT HUP INT TERM; if command -v curl >/dev/null 2>&1 && curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 --output $partial $POLIGOME_BOOTSTRAP_ASSET_BASE_URL/poligome-sam-macos-linux.sh; then downloaded=1; elif command -v wget >/dev/null 2>&1 && wget --https-only --tries=3 --output-document=$partial $POLIGOME_BOOTSTRAP_ASSET_BASE_URL/poligome-sam-macos-linux.sh; then downloaded=1; fi; if test $downloaded -eq 1 && valid_installer $partial; then runner=$partial; else rm -f $partial; valid_installer $final || exit 1; echo 'Download indisponível ou incompatível; usando o instalador WSL2 API 2 validado em cache.' >&2; fi; stage_wsl_pending; monitor_commit & monitor_pid=$(jobs -p); if POLIGOME_SITE_URL=$POLIGOME_SITE_URL bash $runner !MODEL_ID!; then run_status=0; else run_status=$?; fi; commit_windows_selection || true; kill $monitor_pid >/dev/null 2>&1 || true; wait $monitor_pid >/dev/null 2>&1 || true; monitor_pid=0; test $run_status -eq 0; if test $runner = $partial; then chmod 700 $partial; mv -f $partial $final; fi; trap - EXIT HUP INT TERM"
 if errorlevel 1 goto :wsl_install_error
 
 call :commit_windows_selection
@@ -249,16 +249,16 @@ if errorlevel 1 goto :state_error
 
 echo.
 echo O instalador WSL2 foi encerrado normalmente.
-echo Para reutilizar o modelo, execute visionlabel-sam-start-windows.bat.
+echo Para reutilizar o modelo, execute poligome-sam-start-windows.bat.
 pause
 exit /b 0
 
 :help
-echo VisionLabel SAM local - instalador para Windows e WSL2
+echo Poligome SAM local - instalador para Windows e WSL2
 echo.
 echo Uso:
-echo   visionlabel-sam-windows.bat [MODELO]
-echo   visionlabel-sam-windows.bat --help
+echo   poligome-sam-windows.bat [MODELO]
+echo   poligome-sam-windows.bat --help
 echo.
 echo SAM 2.1 é instalado automaticamente na distribuição WSL2 padrão.
 echo SAM 3 também usa WSL2 e exige GPU NVIDIA disponível no WSL,
@@ -267,8 +267,8 @@ echo.
 echo O alias sam3 é aceito e normalizado para sam3-concepts.
 echo.
 echo Variáveis de ambiente opcionais:
-echo   VISIONLABEL_SITE_URL       Site HTTPS aberto no navegador e autorizado no CORS.
-echo   VISIONLABEL_ASSET_BASE_URL Origem HTTPS do conector e dos scripts canônicos.
+echo   POLIGOME_SITE_URL       Site HTTPS aberto no navegador e autorizado no CORS.
+echo   POLIGOME_ASSET_BASE_URL Origem HTTPS do conector e dos scripts canônicos.
 echo A origem padrão dos assets é !DEFAULT_ASSET_BASE_URL!.
 exit /b 0
 
@@ -316,11 +316,11 @@ echo Erro: informe no máximo um modelo. Use --help para ver os IDs.
 exit /b 1
 
 :site_error
-echo Erro: VISIONLABEL_SITE_URL deve ser uma URL HTTPS absoluta, sem credenciais, consulta, fragmento ou espaços.
+echo Erro: POLIGOME_SITE_URL deve ser uma URL HTTPS absoluta, sem credenciais, consulta, fragmento ou espaços.
 exit /b 1
 
 :asset_base_error
-echo Erro: VISIONLABEL_ASSET_BASE_URL deve ser uma URL HTTPS absoluta, sem credenciais, consulta, fragmento ou espaços.
+echo Erro: POLIGOME_ASSET_BASE_URL deve ser uma URL HTTPS absoluta, sem credenciais, consulta, fragmento ou espaços.
 exit /b 1
 
 :invalid_model

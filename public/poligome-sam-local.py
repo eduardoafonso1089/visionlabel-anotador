@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""Conector local multi-engine do SAM para o VisionLabel (SAM 2.1 e SAM 3).
+"""Conector local multi-engine do SAM para o Poligome (SAM 2.1 e SAM 3).
 
 O conector nunca baixa modelos nem instala pacotes. Forneça um checkpoint local
 obtido da fonte oficial do modelo escolhido.
 
 Exemplos:
-  python visionlabel-sam-local.py --model sam2.1-hiera-small \
+  python poligome-sam-local.py --model sam2.1-hiera-small \
     --checkpoint sam2.1_hiera_small.pt
-  python visionlabel-sam-local.py --model sam3-concepts --checkpoint sam3.pt --device cuda
+  python poligome-sam-local.py --model sam3-concepts --checkpoint sam3.pt --device cuda
 """
 
 from __future__ import annotations
@@ -29,7 +29,7 @@ from typing import Any, Protocol
 
 if sys.version_info < (3, 10):
     raise SystemExit(
-        "VisionLabel SAM requer Python 3.10 ou mais novo; "
+        "Poligome SAM requer Python 3.10 ou mais novo; "
         f"esta execução usa Python {sys.version_info.major}.{sys.version_info.minor}."
     )
 
@@ -43,7 +43,7 @@ from pydantic import BaseModel, ConfigDict, Field
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 
-SERVICE_NAME = "VisionLabel SAM local"
+SERVICE_NAME = "Poligome SAM local"
 API_VERSION = 2
 MAX_IMAGE_BYTES = 64 * 1024 * 1024
 MAX_DATA_URL_LENGTH = ((MAX_IMAGE_BYTES + 2) // 3 * 4) + 4096
@@ -93,31 +93,31 @@ def _bounded_env_float(
 
 
 MAX_IMAGE_PIXELS = _bounded_env_int(
-    "VISIONLABEL_MAX_IMAGE_PIXELS",
+    "POLIGOME_MAX_IMAGE_PIXELS",
     16_000_000,
     minimum=1_000_000,
     maximum=100_000_000,
 )
 MAX_CONCURRENT_PREDICTION_REQUESTS = _bounded_env_int(
-    "VISIONLABEL_MAX_CONCURRENT_REQUESTS",
+    "POLIGOME_MAX_CONCURRENT_REQUESTS",
     4,
     minimum=1,
     maximum=16,
 )
 MAX_SAM3_PREDICTIONS = _bounded_env_int(
-    "VISIONLABEL_SAM3_MAX_PREDICTIONS",
+    "POLIGOME_SAM3_MAX_PREDICTIONS",
     64,
     minimum=1,
     maximum=512,
 )
 MIN_SAM3_CONCEPT_THRESHOLD = _bounded_env_float(
-    "VISIONLABEL_SAM3_MIN_CONCEPT_THRESHOLD",
+    "POLIGOME_SAM3_MIN_CONCEPT_THRESHOLD",
     0.1,
     minimum=0.01,
     maximum=0.95,
 )
 DEFAULT_ALLOWED_ORIGINS = (
-    "https://visionlabel-anotador.eduardo1089.chatgpt.site",
+    "https://www.poligome.com",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
 )
@@ -460,7 +460,7 @@ class Sam3Adapter:
 
 
 def _configured_origins() -> tuple[str, ...]:
-    configured = os.environ.get("VISIONLABEL_ALLOWED_ORIGINS", "")
+    configured = os.environ.get("POLIGOME_ALLOWED_ORIGINS", "")
     values = [
         origin.strip().rstrip("/")
         for origin in configured.split(",")
@@ -573,7 +573,7 @@ app.add_middleware(
     allow_headers=["Accept", "Content-Type"],
 )
 
-_app_dir: Path = Path.home() / ".visionlabel-sam"
+_app_dir: Path = Path.home() / ".poligome-sam"
 _startup_port: int = 7860
 _switch_lock = threading.Lock()
 _switch_target: str | None = None
@@ -698,7 +698,7 @@ def _load_model(config: LoadConfig) -> None:
             _current_image_hash = None
         _update_runtime(status="ready", device=adapter.device, error=None)
         print(
-            f"VisionLabel SAM pronto: {config.spec.model_id} em {adapter.device}.",
+            f"Poligome SAM pronto: {config.spec.model_id} em {adapter.device}.",
             flush=True,
         )
     except Exception as error:  # o erro precisa permanecer consultável em /health
@@ -718,7 +718,7 @@ def start_model_loader() -> None:
     threading.Thread(
         target=_load_model,
         args=(config,),
-        name="visionlabel-model-loader",
+        name="poligome-model-loader",
         daemon=True,
     ).start()
 
@@ -906,7 +906,7 @@ def _validate_dimensions(width: int, height: int) -> None:
             status_code=413,
             detail=(
                 f"A imagem possui {width * height} pixels e excede o limite de "
-                f"{MAX_IMAGE_PIXELS}. Ajuste VISIONLABEL_MAX_IMAGE_PIXELS somente se "
+                f"{MAX_IMAGE_PIXELS}. Ajuste POLIGOME_MAX_IMAGE_PIXELS somente se "
                 "o hardware tiver memória suficiente."
             ),
         )
@@ -1298,7 +1298,7 @@ def predict(payload: PredictionRequest):
 def main() -> None:
     global _startup_config
     parser = argparse.ArgumentParser(
-        description="Executa SAM 2.1 ou SAM 3 localmente para o VisionLabel."
+        description="Executa SAM 2.1 ou SAM 3 localmente para o Poligome."
     )
     parser.add_argument(
         "--model",
@@ -1349,7 +1349,7 @@ def main() -> None:
         error=None,
     )
     print(
-        f"VisionLabel SAM ouvindo em http://127.0.0.1:{args.port}; "
+        f"Poligome SAM ouvindo em http://127.0.0.1:{args.port}; "
         f"{model_id} será carregado em segundo plano.",
         flush=True,
     )

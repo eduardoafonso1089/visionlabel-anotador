@@ -1,36 +1,36 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-VISIONLABEL_SAM_INSTALLER_API=2
+POLIGOME_SAM_INSTALLER_API=2
 
-DEFAULT_SITE_URL="https://visionlabel-anotador.eduardo1089.chatgpt.site"
+DEFAULT_SITE_URL="https://www.poligome.com"
 DEFAULT_ASSET_BASE_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/main/public"
-DEFAULT_CONNECTOR_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/visionlabel-sam-local.py"
-DEFAULT_CONNECTOR_SHA256="06e4cbeff322eaaefa0ea1a4b779eb8e754bf74ca9e357afb30e50b8450e5207"
+DEFAULT_CONNECTOR_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/poligome-sam-local.py"
+DEFAULT_CONNECTOR_SHA256="b8fee85c425bcbe745ae4d482494ea3b8c549d69f06641d40949d48c5ca0905d"
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-SITE_URL="${VISIONLABEL_SITE_URL:-${DEFAULT_SITE_URL}}"
+SITE_URL="${POLIGOME_SITE_URL:-${DEFAULT_SITE_URL}}"
 SITE_URL="${SITE_URL%/}"
-ASSET_BASE_URL="${VISIONLABEL_ASSET_BASE_URL:-${DEFAULT_ASSET_BASE_URL}}"
+ASSET_BASE_URL="${POLIGOME_ASSET_BASE_URL:-${DEFAULT_ASSET_BASE_URL}}"
 ASSET_BASE_URL="${ASSET_BASE_URL%/}"
-APP_DIR="${HOME}/.visionlabel-sam"
+APP_DIR="${HOME}/.poligome-sam"
 VENVS_DIR="${APP_DIR}/venvs"
 MODELS_DIR="${APP_DIR}/models"
-CONNECTOR="${APP_DIR}/visionlabel-sam-local.py"
+CONNECTOR="${APP_DIR}/poligome-sam-local.py"
 SELECTED_MODEL_FILE="${APP_DIR}/selected-model.txt"
 PENDING_MODEL_FILE="${APP_DIR}/pending-model.txt"
 PORT="7860"
-STARTUP_TIMEOUT="${VISIONLABEL_STARTUP_TIMEOUT:-1800}"
+STARTUP_TIMEOUT="${POLIGOME_STARTUP_TIMEOUT:-1800}"
 
 SAM2_REVISION="2b90b9f5ceec907a1c18123530e92e794ad901a4"
 SAM3_REVISION="8f0b7f4d4e7eda2ed606ebde6702c93359ad01da"
 
 usage() {
   cat <<'EOF'
-VisionLabel SAM local — instalador para macOS/Linux
+Poligome SAM local — instalador para macOS/Linux
 
 Uso:
-  bash visionlabel-sam-macos-linux.sh [MODELO]
-  bash visionlabel-sam-macos-linux.sh --help
+  bash poligome-sam-macos-linux.sh [MODELO]
+  bash poligome-sam-macos-linux.sh --help
 
 Modelos aceitos:
   sam2.1-hiera-tiny
@@ -43,10 +43,10 @@ Sem MODELO, o instalador abre um menu. SAM 3 exige Linux, GPU NVIDIA,
 Python 3.12+ e acesso aprovado ao checkpoint gated da Meta no Hugging Face.
 
 Variáveis opcionais:
-  VISIONLABEL_SITE_URL        URL HTTPS aberta no navegador e aceita no CORS
-  VISIONLABEL_ASSET_BASE_URL  origem HTTPS pública dos arquivos do instalador
-  VISIONLABEL_CONNECTOR_PATH  conector local explícito para desenvolvimento/offline
-  VISIONLABEL_STARTUP_TIMEOUT segundos máximos para o primeiro carregamento (padrão: 1800)
+  POLIGOME_SITE_URL        URL HTTPS aberta no navegador e aceita no CORS
+  POLIGOME_ASSET_BASE_URL  origem HTTPS pública dos arquivos do instalador
+  POLIGOME_CONNECTOR_PATH  conector local explícito para desenvolvimento/offline
+  POLIGOME_STARTUP_TIMEOUT segundos máximos para o primeiro carregamento (padrão: 1800)
 EOF
 }
 
@@ -200,14 +200,14 @@ download_connector() {
   local url
   local expected_sha256=""
   local partial="${CONNECTOR}.part"
-  local adjacent_connector="${SCRIPT_DIR}/visionlabel-sam-local.py"
+  local adjacent_connector="${SCRIPT_DIR}/poligome-sam-local.py"
   mkdir -p "$(dirname "$partial")"
   rm -f "$partial"
-  if [[ -n "${VISIONLABEL_CONNECTOR_PATH:-}" ]]; then
-    [[ -f "$VISIONLABEL_CONNECTOR_PATH" && -s "$VISIONLABEL_CONNECTOR_PATH" ]] ||
-      fail "VISIONLABEL_CONNECTOR_PATH não aponta para um arquivo de conector válido."
-    printf 'Instalando o conector local informado em VISIONLABEL_CONNECTOR_PATH...\n'
-    if ! cp "$VISIONLABEL_CONNECTOR_PATH" "$partial"; then
+  if [[ -n "${POLIGOME_CONNECTOR_PATH:-}" ]]; then
+    [[ -f "$POLIGOME_CONNECTOR_PATH" && -s "$POLIGOME_CONNECTOR_PATH" ]] ||
+      fail "POLIGOME_CONNECTOR_PATH não aponta para um arquivo de conector válido."
+    printf 'Instalando o conector local informado em POLIGOME_CONNECTOR_PATH...\n'
+    if ! cp "$POLIGOME_CONNECTOR_PATH" "$partial"; then
       rm -f "$partial"
       fail "não foi possível copiar o conector local para ${partial}."
     fi
@@ -219,14 +219,14 @@ download_connector() {
       fail "não foi possível copiar o conector distribuído para ${partial}."
     fi
   else
-    if [[ -n "${VISIONLABEL_ASSET_BASE_URL:-}" ]]; then
-      url="${ASSET_BASE_URL}/visionlabel-sam-local.py"
+    if [[ -n "${POLIGOME_ASSET_BASE_URL:-}" ]]; then
+      url="${ASSET_BASE_URL}/poligome-sam-local.py"
     else
       url="$DEFAULT_CONNECTOR_URL"
       expected_sha256="$DEFAULT_CONNECTOR_SHA256"
     fi
     require_https "$url"
-    printf 'Baixando o conector canônico do VisionLabel da origem pública...\n'
+    printf 'Baixando o conector canônico do Poligome da origem pública...\n'
     if ! download_to_file "$url" "$partial"; then
       rm -f "$partial"
       if connector_is_compatible "$CONNECTOR"; then
@@ -238,12 +238,12 @@ download_connector() {
   fi
   if ! connector_is_compatible "$partial"; then
     rm -f "$partial"
-    if [[ -z "${VISIONLABEL_CONNECTOR_PATH:-}" && ! -s "$adjacent_connector" ]] &&
+    if [[ -z "${POLIGOME_CONNECTOR_PATH:-}" && ! -s "$adjacent_connector" ]] &&
       connector_is_compatible "$CONNECTOR"; then
       printf 'A origem pública forneceu uma versão incompatível; reutilizando o conector local compatível.\n'
       return 0
     fi
-    fail "a origem forneceu um conector incompatível com a API 2 e a opção --model. Tente novamente após atualizar o VisionLabel."
+    fail "a origem forneceu um conector incompatível com a API 2 e a opção --model. Tente novamente após atualizar o Poligome."
   fi
   if [[ -n "$expected_sha256" ]]; then
     local actual_sha256
@@ -262,11 +262,11 @@ download_connector() {
 
 cache_current_installer() {
   local source_installer="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
-  local cached_installer="${APP_DIR}/bin/visionlabel-sam-macos-linux.sh"
+  local cached_installer="${APP_DIR}/bin/poligome-sam-macos-linux.sh"
   local partial="${cached_installer}.part"
   [[ -f "$source_installer" && -s "$source_installer" ]] ||
     fail "não foi possível localizar o próprio instalador para habilitar a retomada automática."
-  grep -Fqx 'VISIONLABEL_SAM_INSTALLER_API=2' "$source_installer" ||
+  grep -Fqx 'POLIGOME_SAM_INSTALLER_API=2' "$source_installer" ||
     fail "o instalador atual não possui o marcador de compatibilidade esperado."
   mkdir -p "$(dirname "$cached_installer")"
   rm -f "$partial"
@@ -300,7 +300,7 @@ try:
 except Exception:
     print("offline")
     raise SystemExit(0)
-if payload.get("service") != "VisionLabel SAM local" or payload.get("api_version") != 2:
+if payload.get("service") != "Poligome SAM local" or payload.get("api_version") != 2:
     print("mismatch")
 elif payload.get("model_id") != expected_model:
     print("mismatch")
@@ -456,8 +456,8 @@ prepare_venv() {
 install_runtime() {
   local ready_file
   case "$FAMILY" in
-    sam2) ready_file="${VENV_DIR}/.visionlabel-sam2-${SAM2_REVISION}.ok" ;;
-    sam3) ready_file="${VENV_DIR}/.visionlabel-sam3-${SAM3_REVISION}.ok" ;;
+    sam2) ready_file="${VENV_DIR}/.poligome-sam2-${SAM2_REVISION}.ok" ;;
+    sam3) ready_file="${VENV_DIR}/.poligome-sam3-${SAM3_REVISION}.ok" ;;
   esac
 
   if [[ "$FAMILY" == "sam3" && -f "$ready_file" ]] &&
@@ -525,7 +525,7 @@ download_sam3_checkpoint() {
   printf '\nSAM 3 usa um checkpoint gated da Meta.\n'
   printf 'Solicite acesso em https://huggingface.co/facebook/sam3 e aceite a licença antes de continuar.\n'
   if ! "$hf_cli" auth whoami >/dev/null 2>&1; then
-    printf 'A autenticação será feita pelo CLI oficial do Hugging Face; o VisionLabel não lê nem armazena seu token.\n'
+    printf 'A autenticação será feita pelo CLI oficial do Hugging Face; o Poligome não lê nem armazena seu token.\n'
     "$hf_cli" auth login || fail "autenticação no Hugging Face não concluída."
   fi
   mkdir -p "$(dirname "$CHECKPOINT")" "$staging_dir"
@@ -612,7 +612,7 @@ run_connector_transactionally() {
   fi
   args+=(--device auto --port "$PORT")
   printf 'Iniciando o conector e aguardando %s ficar pronto...\n' "$MODEL_ID"
-  VISIONLABEL_ALLOWED_ORIGINS="${SITE_ORIGIN},http://localhost:5173,http://127.0.0.1:5173" \
+  POLIGOME_ALLOWED_ORIGINS="${SITE_ORIGIN},http://localhost:5173,http://127.0.0.1:5173" \
     "$PYTHON" "${args[@]}" &
   CONNECTOR_PID=$!
 
@@ -687,7 +687,7 @@ if (( $# > 1 )); then
 fi
 
 [[ "$STARTUP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] ||
-  fail "VISIONLABEL_STARTUP_TIMEOUT deve ser um número inteiro positivo de segundos."
+  fail "POLIGOME_STARTUP_TIMEOUT deve ser um número inteiro positivo de segundos."
 
 require_https "$SITE_URL"
 site_authority="${SITE_URL#https://}"
@@ -696,7 +696,7 @@ if [[ "$site_authority" == *:443 ]]; then
   site_authority="${site_authority%:443}"
 fi
 SITE_ORIGIN="https://${site_authority}"
-if [[ -z "${VISIONLABEL_CONNECTOR_PATH:-}" ]]; then
+if [[ -z "${POLIGOME_CONNECTOR_PATH:-}" ]]; then
   require_https "$ASSET_BASE_URL"
 fi
 
@@ -713,7 +713,7 @@ set_model_metadata "$MODEL_ID"
 check_platform
 
 printf '\n==========================================\n'
-printf ' VisionLabel SAM local — %s\n' "$MODEL_ID"
+printf ' Poligome SAM local — %s\n' "$MODEL_ID"
 printf '==========================================\n\n'
 
 mkdir -p "$APP_DIR" "$VENVS_DIR" "$MODELS_DIR"
