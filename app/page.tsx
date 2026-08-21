@@ -47,7 +47,7 @@ export default function Landing() {
   // uma preferência existente com o "pt" do primeiro render.
   function chooseLanguage(next: Language) {
     setLanguage(next);
-    localStorage.setItem("epiaka-language", next);
+    localStorage.setItem("poligome-language", next);
   }
 
   const features = [

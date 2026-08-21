@@ -1,7 +1,7 @@
-<!-- Epiaka - logo principal, para fundos claros. Para fundos escuros use epiaka-logo-dark.svg.
+<!-- Poligome - logo principal, para fundos claros. Para fundos escuros use poligome-logo-dark.svg.
      Cores explicitas de proposito: prefers-color-scheme dentro de <img> segue o tema do
      sistema, nao o fundo onde a marca esta aplicada. -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="-26.5 -160.4 622.4 213.2" width="622" height="213" role="img" aria-label="Epiaka">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-26.5 -160.4 622.4 213.2" width="622" height="213" role="img" aria-label="Poligome">
   <!-- Simbolo: traco fino (8.2) por contraste deliberado com o peso do logotipo (15). -->
   <g transform="translate(0,-50)">
     <g fill="none" stroke="#111614" stroke-width="8.2" stroke-linecap="round">

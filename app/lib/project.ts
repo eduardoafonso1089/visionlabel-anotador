@@ -12,7 +12,7 @@ type PortableAsset = Omit<Asset, "src" | "local"> & {
 export type ProjectSaveMode = "annotations" | "complete";
 
 type ProjectManifest = {
-  format: "epiaka-project";
+  format: "poligome-project";
   version: 2;
   project_name: string;
   saved_at: string;
@@ -21,7 +21,7 @@ type ProjectManifest = {
   annotations: Annotation[];
 };
 
-export type LoadedEpiakaProject = {
+export type LoadedPoligomeProject = {
   projectName: string;
   assets: Asset[];
   labels: Label[];
@@ -32,7 +32,7 @@ export type LoadedEpiakaProject = {
 
 function safeBaseName(name: string) {
   const normalized = name.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
-  return normalized.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "epiaka-project";
+  return normalized.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "").toLowerCase() || "poligome-project";
 }
 
 function safeFileName(name: string, fallback: string) {
@@ -45,7 +45,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 }
 
 function parseManifest(value: unknown, copy: Copy): ProjectManifest {
-  if (!isObject(value) || value.format !== "epiaka-project" || value.version !== 2) {
+  if (!isObject(value) || value.format !== "poligome-project" || value.version !== 2) {
     throw new Error(copy.errProjectFormat);
   }
   if (typeof value.project_name !== "string" || !Array.isArray(value.assets) || !Array.isArray(value.labels) || !Array.isArray(value.annotations)) {
@@ -68,7 +68,7 @@ function parseManifest(value: unknown, copy: Copy): ProjectManifest {
   const assetIds = new Set(assets.map((item) => item.id));
   const labelIds = new Set(labels.map((item) => item.id));
   return {
-    format: "epiaka-project",
+    format: "poligome-project",
     version: 2,
     project_name: value.project_name.trim() || copy.defaultProjectName,
     saved_at: typeof value.saved_at === "string" ? value.saved_at : new Date().toISOString(),
@@ -78,7 +78,7 @@ function parseManifest(value: unknown, copy: Copy): ProjectManifest {
   };
 }
 
-export async function saveEpiakaProject(projectName: string, assets: Asset[], labels: Label[], annotations: Annotation[], mode: ProjectSaveMode, copy: Copy) {
+export async function savePoligomeProject(projectName: string, assets: Asset[], labels: Label[], annotations: Annotation[], mode: ProjectSaveMode, copy: Copy) {
   const zip = new JSZip();
   const portableAssets = await Promise.all(assets.map(async (asset, index): Promise<PortableAsset> => {
     const { src, local, ...metadata } = asset;
@@ -96,7 +96,7 @@ export async function saveEpiakaProject(projectName: string, assets: Asset[], la
   }));
 
   const manifest: ProjectManifest = {
-    format: "epiaka-project",
+    format: "poligome-project",
     version: 2,
     project_name: projectName.trim() || copy.defaultProjectName,
     saved_at: new Date().toISOString(),
@@ -105,13 +105,13 @@ export async function saveEpiakaProject(projectName: string, assets: Asset[], la
     annotations,
   };
   zip.file("project.json", JSON.stringify(manifest, null, 2));
-  const archive = await zip.generateAsync({ type: "blob", compression: "STORE", mimeType: "application/vnd.epiaka.project+zip" });
-  const fileName = `${safeBaseName(manifest.project_name)}.epka`;
+  const archive = await zip.generateAsync({ type: "blob", compression: "STORE", mimeType: "application/vnd.poligome.project+zip" });
+  const fileName = `${safeBaseName(manifest.project_name)}.plgm`;
   downloadBlob(fileName, archive);
   return fileName;
 }
 
-export async function openEpiakaProject(file: File, copy: Copy): Promise<LoadedEpiakaProject> {
+export async function openPoligomeProject(file: File, copy: Copy): Promise<LoadedPoligomeProject> {
   const zip = await JSZip.loadAsync(file);
   const manifestEntry = zip.file("project.json");
   if (!manifestEntry) throw new Error(copy.errProjectManifest);

@@ -77,7 +77,7 @@ export function exportCoco(assets: Asset[], labels: Label[], annotations: Annota
     };
   });
   downloadBlob(
-    "epiaka-coco.json",
+    "poligome-coco.json",
     new Blob(
       [JSON.stringify({ info: { description: "poligome.com dataset", version: "1.0" }, images, categories, annotations: cocoAnnotations }, null, 2)],
       { type: "application/json;charset=utf-8" },
@@ -117,5 +117,5 @@ export async function exportYoloZip(assets: Asset[], labels: Label[], annotation
     "README.txt",
     `${readme}\n`,
   );
-  downloadBlob("epiaka-yolo.zip", await zip.generateAsync({ type: "blob" }));
+  downloadBlob("poligome-yolo.zip", await zip.generateAsync({ type: "blob" }));
 }

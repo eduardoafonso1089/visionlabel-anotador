@@ -1,19 +1,19 @@
 @echo off
 chcp 65001 >nul
 setlocal EnableExtensions
-title Epiaka SAM local
+title Poligome SAM local
 
-set "APP_DIR=%LOCALAPPDATA%\EpiakaSAM"
+set "APP_DIR=%LOCALAPPDATA%\PoligomeSAM"
 set "VENV_DIR=%APP_DIR%\venv"
-set "CONNECTOR=%APP_DIR%\epiaka-sam-local.py"
+set "CONNECTOR=%APP_DIR%\poligome-sam-local.py"
 set "CHECKPOINT=%APP_DIR%\sam_vit_b_01ec64.pth"
 set "READY_FILE=%APP_DIR%\dependencies-v2.ok"
 set "MODEL_URL=https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-set "SITE_URL=https://www.epiaka.com"
+set "SITE_URL=https://www.poligome.com"
 
 echo.
 echo ==========================================
-echo        Epiaka SAM local
+echo        Poligome SAM local
 echo ==========================================
 echo Este instalador prepara o SAM no seu computador.
 echo Na primeira execucao o processo pode demorar alguns minutos.
@@ -22,7 +22,7 @@ echo.
 if not exist "%APP_DIR%" mkdir "%APP_DIR%"
 
 set "SELF_PATH=%~f0"
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$content=[IO.File]::ReadAllText($env:SELF_PATH); $marker='# === EPIAKA_'+'PYTHON ==='; $index=$content.IndexOf($marker,[StringComparison]::Ordinal); if($index -lt 0){exit 41}; $python=$content.Substring($index+$marker.Length).TrimStart([char]13,[char]10); if([string]::IsNullOrWhiteSpace($python)){exit 42}; [IO.File]::WriteAllText($env:CONNECTOR,$python,[Text.UTF8Encoding]::new($false))"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$content=[IO.File]::ReadAllText($env:SELF_PATH); $marker='# === POLIGOME_'+'PYTHON ==='; $index=$content.IndexOf($marker,[StringComparison]::Ordinal); if($index -lt 0){exit 41}; $python=$content.Substring($index+$marker.Length).TrimStart([char]13,[char]10); if([string]::IsNullOrWhiteSpace($python)){exit 42}; [IO.File]::WriteAllText($env:CONNECTOR,$python,[Text.UTF8Encoding]::new($false))"
 if errorlevel 1 goto :extract_error
 
 set "PY_CMD="
@@ -64,7 +64,7 @@ if not exist "%CHECKPOINT%" (
 
 echo.
 echo Preparacao concluida. Mantenha esta janela aberta.
-echo O Epiaka sera aberto no navegador; espere a mensagem SAM pronto.
+echo O Poligome sera aberto no navegador; espere a mensagem SAM pronto.
 start "" "%SITE_URL%"
 echo.
 "%PYTHON%" "%CONNECTOR%" --checkpoint "%CHECKPOINT%" --model-type vit_b --device auto
@@ -98,7 +98,7 @@ echo O download do modelo falhou. Verifique a conexao e tente novamente.
 pause
 exit /b 1
 
-# === EPIAKA_PYTHON ===
+# === POLIGOME_PYTHON ===
 from __future__ import annotations
 
 import argparse
@@ -126,7 +126,7 @@ class PredictionRequest(BaseModel):
     multimask_output: bool = True
 
 
-app = FastAPI(title="Epiaka SAM local", version="2.0")
+app = FastAPI(title="Poligome SAM local", version="2.0")
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -150,7 +150,7 @@ async def allow_local_browser_access(request: Request, call_next):
 
 @app.get("/")
 def root():
-    return {"service": "Epiaka SAM local", "status": "ready", **runtime}
+    return {"service": "Poligome SAM local", "status": "ready", **runtime}
 
 
 @app.get("/health")
@@ -212,7 +212,7 @@ def predict(payload: PredictionRequest):
 
 def main():
     global predictor
-    parser = argparse.ArgumentParser(description="Executa o SAM localmente para o Epiaka.")
+    parser = argparse.ArgumentParser(description="Executa o SAM localmente para o Poligome.")
     parser.add_argument("--checkpoint", required=True)
     parser.add_argument("--model-type", choices=["vit_b", "vit_l", "vit_h"], default="vit_b")
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")

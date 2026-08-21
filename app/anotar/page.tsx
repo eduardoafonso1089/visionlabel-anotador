@@ -1,7 +1,7 @@
 "use client";
 
 import {
-  Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus,
+  Check, ChevronDown, ChevronLeft, ChevronRight, CircleMinus, CirclePlus, Crosshair,
   Combine, Copy, Download, Eye, EyeOff, FileText, FolderOpen, FolderUp, Hand, HardDriveDownload, ImagePlus, Images, Keyboard, Languages, Link2,
   Focus, ListRestart, LoaderCircle, Magnet, Maximize2, Menu, MoreHorizontal, MousePointer2, PenLine, Save, ShieldCheck,
   Monitor, Moon, Palette, Pencil, Pentagon, Plus, Power, Redo2, Scissors, Search, Settings2, Sparkles,
@@ -16,7 +16,7 @@ import {
 } from "../lib/geometry";
 import { exportCoco, exportYoloZip } from "../lib/exporters";
 import { fill, getCopy, storedLanguage, storedTheme } from "../lib/i18n";
-import { openEpiakaProject, saveEpiakaProject } from "../lib/project";
+import { openPoligomeProject, savePoligomeProject } from "../lib/project";
 import type { ProjectSaveMode } from "../lib/project";
 import { requestSamMask } from "../lib/sam";
 import type { Language, ThemeMode } from "../lib/i18n";
@@ -159,11 +159,13 @@ export default function Home() {
   const [reshapeStartInside, setReshapeStartInside] = useState<boolean | null>(null);
   const [snapping, setSnapping] = useState(true);
   const [snapGuide, setSnapGuide] = useState<{ x: number; y: number } | null>(null);
+  const [coordinatesGuide, setCoordinatesGuide] = useState(false);
+  const [cursorPoint, setCursorPoint] = useState<{ x: number; y: number } | null>(null);
   const [readyImageIds, setReadyImageIds] = useState<string[]>([]);
   const [zoom, setZoom] = useState(92);
   const [lineThickness, setLineThickness] = useState(() => {
     if (typeof window === "undefined") return 3;
-    const stored = Number(localStorage.getItem("epiaka-line-thickness"));
+    const stored = Number(localStorage.getItem("poligome-line-thickness"));
     return Number.isFinite(stored) && stored >= 1 && stored <= 10 ? stored : 3;
   });
   const [search, setSearch] = useState("");
@@ -204,7 +206,7 @@ export default function Home() {
   const [samOpen, setSamOpen] = useState(false);
   const [samEndpoint, setSamEndpoint] = useState(() => {
     if (typeof window === "undefined") return "";
-    const stored = localStorage.getItem("epiaka-sam-endpoint") ?? "";
+    const stored = localStorage.getItem("poligome-sam-endpoint") ?? "";
     try {
       const host = new URL(stored).hostname;
       return host === "localhost" || host === "127.0.0.1" || host === "[::1]" ? stored : "";
@@ -235,6 +237,7 @@ export default function Home() {
   const zoomAnchorRef = useRef<{ x: number; y: number } | null>(null);
   const pendingZoomRef = useRef<{ clientX: number; clientY: number; anchorX: number; anchorY: number } | null>(null);
   const projectObjectUrlsRef = useRef<string[]>([]);
+  const labelsRef = useRef(labels);
   const idCounter = useRef(0);
 
   const asset = assets.find((item) => item.id === current) ?? assets[0];
@@ -247,6 +250,7 @@ export default function Home() {
   const visibleAnnotations = currentAnnotations.filter((annotation) =>
     !hiddenAnnotations.includes(annotation.id) && !hiddenLabels.includes(annotation.label),
   );
+  const currentImageAnnotationsHidden = currentAnnotations.length > 0 && currentAnnotations.every((annotation) => hiddenAnnotations.includes(annotation.id));
   const copy = getCopy(language);
   const activeAnnotation = annotations.find((annotation) => annotation.id === selected);
   const activePolygonBounds = activeAnnotation?.type === "polygon" && (activeAnnotation.pts?.length ?? 0) >= 6
@@ -284,6 +288,8 @@ export default function Home() {
   const completed = useMemo(() => new Set(annotations.map((annotation) => annotation.asset)).size, [annotations]);
   const remember = useCallback(() => { setHistory((items) => [...items.slice(-24), annotations]); setSaved(false); }, [annotations]);
 
+  useEffect(() => { labelsRef.current = labels; }, [labels]);
+
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => setMounted(true));
     return () => window.cancelAnimationFrame(frame);
@@ -306,18 +312,18 @@ export default function Home() {
     document.documentElement.dataset.theme = themeMode;
     document.documentElement.lang = language === "pt" ? "pt-BR" : language;
     document.title = copy.appTitle;
-    localStorage.setItem("epiaka-theme", themeMode);
-    localStorage.setItem("epiaka-language", language);
+    localStorage.setItem("poligome-theme", themeMode);
+    localStorage.setItem("poligome-language", language);
   }, [copy.appTitle, language, themeMode]);
 
   useEffect(() => {
-    localStorage.setItem("epiaka-line-thickness", String(lineThickness));
+    localStorage.setItem("poligome-line-thickness", String(lineThickness));
   }, [lineThickness]);
 
   useEffect(() => {
-    localStorage.removeItem("epiaka-labels");
-    localStorage.removeItem("epiaka-annotations");
-    localStorage.removeItem("epiaka-project-name");
+    localStorage.removeItem("poligome-labels");
+    localStorage.removeItem("poligome-annotations");
+    localStorage.removeItem("poligome-project-name");
   }, []);
 
   useEffect(() => () => {
@@ -628,6 +634,7 @@ export default function Home() {
 
   function canvasPointerMove(event: React.PointerEvent<SVGSVGElement>) {
     const point = editorPoint(event.clientX, event.clientY);
+    if (coordinatesGuide) setCursorPoint(point);
     const activeMarquee = selectionMarqueeRef.current;
     if (activeMarquee) {
       const next = { ...activeMarquee, currentX: point.x, currentY: point.y };
@@ -919,6 +926,17 @@ export default function Home() {
     }
   }
 
+  function toggleCurrentImageAnnotationVisibility() {
+    const ids = currentAnnotations.map((annotation) => annotation.id);
+    if (!ids.length) return;
+    if (currentImageAnnotationsHidden) {
+      setHiddenAnnotations((items) => items.filter((id) => !ids.includes(id)));
+      return;
+    }
+    setHiddenAnnotations((items) => Array.from(new Set([...items, ...ids])));
+    setSelected(null); setMultiSelected([]); setSelectedVertex(null);
+  }
+
   function toggleLabelVisibility(id: string) {
     const willHide = !hiddenLabels.includes(id);
     setHiddenLabels((items) => willHide ? [...items, id] : items.filter((item) => item !== id));
@@ -1013,12 +1031,59 @@ export default function Home() {
     setSelected(null); setMultiSelected([]); setSelectedVertex(null); resetDrafts(); setSaved(false);
   }
 
-  async function importCocoAnnotations(file: File) {
+  async function importCephalometricLandmarks(file: File, data: unknown) {
+    type Landmark = { title?: unknown; symbol?: unknown; value?: { x?: unknown; y?: unknown } };
+    type LandmarkDocument = { ceph_id?: unknown; landmarks?: Landmark[] };
+    const document = data as LandmarkDocument;
+    const cephId = document.ceph_id;
+    if (typeof cephId !== "string" || !Array.isArray(document.landmarks)) throw new Error();
+    const targetAsset = assets.find((item) => item.name.split(/[\\/]/).at(-1)!.replace(/\.[^.]+$/, "").toLocaleLowerCase() === cephId.toLocaleLowerCase());
+    if (!targetAsset) {
+      showToast(`A imagem ${cephId} não está carregada.`);
+      return;
+    }
+    const dimensions = targetAsset.width && targetAsset.height
+      ? { width: targetAsset.width, height: targetAsset.height }
+      : await readImageDimensions(targetAsset.src);
+    if (!dimensions) throw new Error();
+
+    const nextLabels = [...labelsRef.current];
+    const imported: Annotation[] = [];
+    document.landmarks.forEach((landmark) => {
+      const x = Number(landmark.value?.x); const y = Number(landmark.value?.y);
+      const title = typeof landmark.title === "string" ? landmark.title.trim() : "";
+      const symbol = typeof landmark.symbol === "string" ? landmark.symbol.trim() : "";
+      if (!Number.isFinite(x) || !Number.isFinite(y) || (!symbol && !title)) return;
+      const name = symbol || title;
+      const existing = nextLabels.find((label) => label.name.toLocaleLowerCase() === name.toLocaleLowerCase());
+      const label = existing ?? { id: makeId("label"), name, color: nextLabelColor(nextLabels), key: "" };
+      if (!existing) nextLabels.push(label);
+      imported.push({
+        id: makeId("landmark"), asset: targetAsset.id, label: label.id, type: "point",
+        x: x / dimensions.width * 1000, y: y / dimensions.height * 650,
+      });
+    });
+    if (!imported.length) throw new Error();
+    labelsRef.current = nextLabels;
+    setAssets((items) => items.map((item) => item.id === targetAsset.id ? { ...item, ...dimensions } : item));
+    setLabels(nextLabels); setAnnotations((items) => [...items, ...imported]); setSaved(false);
+    showToast(`${imported.length} landmarks carregados: ${file.name}`);
+  }
+
+  async function importCocoAnnotations(file: File | File[]) {
+    if (Array.isArray(file)) {
+      for (const annotationFile of file) await importCocoAnnotations(annotationFile);
+      return;
+    }
     type CocoImage = { id?: number; file_name?: string; width?: number; height?: number };
     type CocoCategory = { id?: number; name?: string };
     type CocoAnnotation = { image_id?: number; category_id?: number; bbox?: number[]; segmentation?: unknown };
     try {
-      const data = JSON.parse(await file.text()) as { images?: CocoImage[]; categories?: CocoCategory[]; annotations?: CocoAnnotation[] };
+      const data = JSON.parse(await file.text()) as { images?: CocoImage[]; categories?: CocoCategory[]; annotations?: CocoAnnotation[]; ceph_id?: unknown; landmarks?: unknown };
+      if (typeof data.ceph_id === "string" && Array.isArray(data.landmarks)) {
+        await importCephalometricLandmarks(file, data);
+        return;
+      }
       if (!Array.isArray(data.images) || !Array.isArray(data.annotations)) throw new Error();
       const assetByName = new Map(assets.map((item) => [item.name.split(/[\\/]/).at(-1)!.toLocaleLowerCase(), item]));
       const images = new Map(data.images.filter((item) => typeof item.id === "number" && typeof item.file_name === "string")
@@ -1036,7 +1101,7 @@ export default function Home() {
       });
       const categoryById = new Map((data.categories ?? []).filter((item) => typeof item.id === "number" && typeof item.name === "string")
         .map((item) => [item.id!, item.name!.trim()]));
-      const nextLabels = [...labels];
+      const nextLabels = [...labelsRef.current];
       const labelByCategory = new Map<number, string>();
       categoryById.forEach((name, categoryId) => {
         const existing = nextLabels.find((label) => label.name.toLocaleLowerCase() === name.toLocaleLowerCase());
@@ -1047,11 +1112,12 @@ export default function Home() {
       const imported: Annotation[] = [];
       data.annotations.forEach((item) => {
         const image = typeof item.image_id === "number" ? images.get(item.image_id) : undefined;
-        if (!image?.asset || !Array.isArray(item.bbox) || item.bbox.length < 4) return;
+        const targetAsset = image?.asset;
+        if (!targetAsset || !Array.isArray(item.bbox) || item.bbox.length < 4) return;
         const [x, y, width, height] = item.bbox.map(Number);
         if (![x, y, width, height].every(Number.isFinite)) return;
-        const sourceWidth = Number(image.width) || image.asset.width || 1000;
-        const sourceHeight = Number(image.height) || image.asset.height || 650;
+        const sourceWidth = Number(image.width) || targetAsset.width || 1000;
+        const sourceHeight = Number(image.height) || targetAsset.height || 650;
         const sx = 1000 / sourceWidth; const sy = 650 / sourceHeight;
         const label = typeof item.category_id === "number" ? labelByCategory.get(item.category_id) ?? UNLABELED_ID : UNLABELED_ID;
         // COCO permite vários anéis em uma annotation. O editor trabalha com um anel
@@ -1063,11 +1129,11 @@ export default function Home() {
           : [];
         if (polygons.length) {
           polygons.forEach((polygon) => imported.push({
-            id: makeId("coco"), asset: image.asset.id, label, type: "polygon",
+            id: makeId("coco"), asset: targetAsset.id, label, type: "polygon",
             pts: polygon.map((value, index) => value * (index % 2 ? sy : sx)),
           }));
         } else {
-          imported.push({ id: makeId("coco"), asset: image.asset.id, label, type: "box", x: x * sx, y: y * sy, w: width * sx, h: height * sy });
+          imported.push({ id: makeId("coco"), asset: targetAsset.id, label, type: "box", x: x * sx, y: y * sy, w: width * sx, h: height * sy });
         }
       });
       if (!imported.length) { showToast("Nenhuma anotação COCO corresponde às imagens carregadas."); return; }
@@ -1075,6 +1141,7 @@ export default function Home() {
         const dimensions = dimensionsByAsset.get(item.id);
         return dimensions ? { ...item, ...dimensions } : item;
       }));
+      labelsRef.current = nextLabels;
       setLabels(nextLabels); setAnnotations((items) => [...items, ...imported]); setSaved(false);
       showToast(`${imported.length} anotações COCO carregadas.`);
     } catch { showToast("Não foi possível ler o arquivo COCO JSON."); }
@@ -1220,7 +1287,7 @@ export default function Home() {
   async function loadProjectFile(file: File) {
     setProjectBusy(true);
     try {
-      const loaded = await openEpiakaProject(file, copy);
+      const loaded = await openPoligomeProject(file, copy);
       projectObjectUrlsRef.current.forEach((url) => URL.revokeObjectURL(url));
       projectObjectUrlsRef.current = loaded.objectUrls;
       const firstLabel = loaded.labels.find((label) => label.id !== UNLABELED_ID) ?? loaded.labels[0];
@@ -1251,7 +1318,7 @@ export default function Home() {
     if (mode === "complete" && missingProjectImages) return;
     setProjectBusy(true);
     try {
-      const fileName = await saveEpiakaProject(projectName, assets, labels, annotations, mode, copy);
+      const fileName = await savePoligomeProject(projectName, assets, labels, annotations, mode, copy);
       setSaved(true); setProjectOpen(false); setProjectSaveOpen(false);
       showToast(`${copy.projectSaved}: ${fileName}`);
     } catch (error) {
@@ -1305,7 +1372,7 @@ export default function Home() {
       showToast(copy.toastSamNotReady);
       return;
     }
-    setSamEndpoint(endpoint); localStorage.setItem("epiaka-sam-endpoint", endpoint);
+    setSamEndpoint(endpoint); localStorage.setItem("poligome-sam-endpoint", endpoint);
     clearSam(); setSamPromptMode(1); setSamOpen(false); setTool("sam"); showToast(copy.toastSamConnected);
   }
   function activateSam() {
@@ -1343,7 +1410,7 @@ export default function Home() {
 
   return <main className="shell">
     <header className="topbar">
-      <input hidden ref={openProjectInputRef} type="file" accept=".epka,application/zip,application/vnd.epiaka.project+zip" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void loadProjectFile(file); }} />
+      <input hidden ref={openProjectInputRef} type="file" accept=".plgm,application/zip,application/vnd.poligome.project+zip" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void loadProjectFile(file); }} />
       <div className="topbar-main">
       <div className="brand-side">
         <button className="mobile" onClick={() => setLeftOpen(true)} aria-label={copy.openImages}><Menu size={19} /></button>
@@ -1384,9 +1451,9 @@ export default function Home() {
     <div className="workspace">
       <aside className={`assets ${leftOpen ? "open" : ""}`}>
         <div className="drawer-head"><b>{copy.images}</b><button onClick={() => setLeftOpen(false)}><X size={19} /></button></div>
-        <div className="aside-title"><span>{copy.images} <b>{assets.length}</b></span><div><button title={copy.importImages} aria-label={copy.importImages} onClick={() => input.current?.click()}><Plus size={16} /></button><button title="Selecionar todas as imagens" aria-label="Selecionar todas as imagens" disabled={!assets.length} onClick={() => { const ids = assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item) => item.id); setSelectedAssetIds((items) => ids.every((id) => items.includes(id)) ? items.filter((id) => !ids.includes(id)) : Array.from(new Set([...items, ...ids]))); }}><Check size={16} /></button><button title="Carregar anotações COCO" aria-label="Carregar anotações COCO" disabled={!assets.length} onClick={() => cocoInputRef.current?.click()}><FileText size={16} /></button><button title="Excluir imagens selecionadas" aria-label="Excluir imagens selecionadas" disabled={!asset && !selectedAssetIds.length} onClick={deleteSelectedImages}><Trash2 size={16} /></button></div></div>
+        <div className="aside-title"><span>{copy.images} <b>{assets.length}</b></span><div><button title={copy.importImages} aria-label={copy.importImages} onClick={() => input.current?.click()}><Plus size={16} /></button><button title="Selecionar todas as imagens" aria-label="Selecionar todas as imagens" disabled={!assets.length} onClick={() => { const ids = assets.filter((item) => item.name.toLowerCase().includes(search.toLowerCase())).map((item) => item.id); setSelectedAssetIds((items) => ids.every((id) => items.includes(id)) ? items.filter((id) => !ids.includes(id)) : Array.from(new Set([...items, ...ids]))); }}><Check size={16} /></button><button title={currentImageAnnotationsHidden ? `${copy.showAnnotation}: ${copy.images.toLocaleLowerCase()}` : `${copy.hideAnnotation}: ${copy.images.toLocaleLowerCase()}`} aria-label={currentImageAnnotationsHidden ? `${copy.showAnnotation}: ${copy.images.toLocaleLowerCase()}` : `${copy.hideAnnotation}: ${copy.images.toLocaleLowerCase()}`} disabled={!currentAnnotations.length} onClick={toggleCurrentImageAnnotationVisibility}>{currentImageAnnotationsHidden ? <EyeOff size={16} /> : <Eye size={16} />}</button><button title="Carregar anotações COCO ou landmarks" aria-label="Carregar anotações COCO ou landmarks" disabled={!assets.length} onClick={() => cocoInputRef.current?.click()}><FileText size={16} /></button><button title="Excluir imagens selecionadas" aria-label="Excluir imagens selecionadas" disabled={!asset && !selectedAssetIds.length} onClick={deleteSelectedImages}><Trash2 size={16} /></button></div></div>
         <input hidden ref={input} type="file" accept="image/*" multiple onChange={(event) => files(event.target.files)} />
-        <input hidden ref={cocoInputRef} type="file" accept="application/json,.json" onChange={(event) => { const file = event.currentTarget.files?.[0]; event.currentTarget.value = ""; if (file) void importCocoAnnotations(file); }} />
+        <input hidden ref={cocoInputRef} type="file" accept="application/json,.json" multiple onChange={(event) => { const annotationFiles = Array.from(event.currentTarget.files ?? []); event.currentTarget.value = ""; if (annotationFiles.length) void importCocoAnnotations(annotationFiles); }} />
         <button className="import" onClick={() => input.current?.click()}><ImagePlus size={16} /> {copy.importImages}</button>
         <label className="search"><Search size={14} /><input value={search} onChange={(event) => setSearch(event.target.value)} placeholder={copy.searchImage} /></label>
         <div className="progress"><div><span>{copy.progress}</span><b>{completed} {copy.of} {assets.length}</b></div><i><em style={{ width: `${assets.length ? completed / assets.length * 100 : 0}%` }} /></i></div>
@@ -1396,17 +1463,25 @@ export default function Home() {
 
       <section className="editor">
         <div className="tools">
-          <div><ToolButton title={copy.select} keyHint="V" active={tool === "select"} onClick={() => setTool("select")}><MousePointer2 size={18} /></ToolButton><ToolButton title={`${copy.pan} · ${copy.middlePan}`} keyHint="H" active={tool === "pan"} onClick={() => setTool("pan")}><Hand size={18} /></ToolButton></div><i />
+          <div><ToolButton title={copy.select} keyHint="V" active={tool === "select"} onClick={() => setTool("select")}><MousePointer2 size={18} /></ToolButton><ToolButton title={`${copy.pan} · ${copy.middlePan}`} keyHint="H" active={tool === "pan"} onClick={() => setTool("pan")}><Hand size={18} /></ToolButton><ToolButton title="Guias de coordenadas X/Y" active={coordinatesGuide} onClick={() => { setCoordinatesGuide((value) => !value); setCursorPoint(null); }}><Crosshair size={18} /></ToolButton></div><i />
           <div><ToolButton title={copy.box} keyHint="B" active={tool === "box"} onClick={() => setTool("box")}><Square size={18} /></ToolButton><ToolButton title={copy.polygon} keyHint="P" active={tool === "polygon"} onClick={() => setTool("polygon")}>{tool === "polygon" ? <PenTool size={18} /> : <Pentagon size={18} />}</ToolButton><ToolButton title={copy.freehand} keyHint="F" active={tool === "freehand"} onClick={() => setTool("freehand")}><PenLine size={18} /></ToolButton><ToolButton title={copy.line} keyHint="L" active={tool === "line"} onClick={() => setTool("line")}><Spline size={18} /></ToolButton><ToolButton title={copy.point} keyHint="K" active={tool === "point"} onClick={() => setTool("point")}><span className="point-icon" /></ToolButton><ToolButton title={tool === "sam" ? copy.samDeactivate : copy.sam} keyHint="S" active={tool === "sam"} onClick={activateSam}><WandSparkles size={18} /></ToolButton></div><i />
           <div className="edit-tools"><ToolButton title={copy.simplify} disabled={activeAnnotation?.type !== "polygon"} onClick={simplifySelected}><ListRestart size={18} /></ToolButton><ToolButton title={copy.duplicate} disabled={activeAnnotation?.type !== "polygon"} onClick={duplicateSelected}><Copy size={17} /></ToolButton><ToolButton title={copy.merge} disabled={selectedPolygons.length < 2} onClick={mergeSelected}><Combine size={18} /></ToolButton><ToolButton title={copy.split} disabled={activeAnnotation?.type !== "polygon"} active={tool === "split"} onClick={() => setTool("split")}><Scissors size={17} /></ToolButton><ToolButton title={copy.transform} keyHint="T" disabled={activeAnnotation?.type !== "polygon"} active={tool === "transform"} onClick={() => setTool("transform")}><Maximize2 size={17} /></ToolButton><ToolButton title={copy.reshape} keyHint="R" disabled={activeAnnotation?.type !== "polygon"} active={tool === "reshape"} onClick={() => setTool("reshape")}><PenTool size={17} /></ToolButton><ToolButton title={snapping ? copy.snapOn : copy.snapOff} active={snapping} onClick={() => { setSnapping((value) => !value); setSnapGuide(null); }}><Magnet size={17} /></ToolButton></div><i />
           <div><ToolButton title={copy.undo} disabled={!history.length} onClick={undo}><Undo2 size={18} /></ToolButton><ToolButton title={copy.redo} disabled><Redo2 size={18} /></ToolButton><ToolButton title={selectedVertex ? copy.deleteVertexTitle : polygonDraft.length ? copy.removeLastPointTitle : copy.deleteShape} disabled={!selected && !polygonDraft.length} onClick={deleteSelection}><Trash2 size={18} /></ToolButton></div><span className="spacer" />
           <label className="stroke-control" title={copy.lineThickness}><PenLine size={14} /><input aria-label={copy.lineThickness} type="range" min="1" max="10" step="1" value={lineThickness} onChange={(event) => setLineThickness(Number(event.target.value))} /><output>{lineThickness}px</output></label><div className="zoom" title={copy.shiftZoom}><button aria-label={copy.zoomOut} onClick={() => applyZoom(zoom - 10)}><ZoomOut size={15} /></button><span>{zoom}%</span><button aria-label={copy.zoomIn} onClick={() => applyZoom(zoom + 10)}><ZoomIn size={15} /></button></div><ToolButton title={copy.fitImage} onClick={fitImageToViewport}><Focus size={16} /></ToolButton>
         </div>
 
-        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const projectFile = Array.from(event.dataTransfer.files).find((file) => file.name.toLowerCase().endsWith(".epka")); if (projectFile) { if (saved || window.confirm(copy.replaceUnsavedProject)) void loadProjectFile(projectFile); } else files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onPointerMove={(event) => { zoomAnchorRef.current = { x: event.clientX, y: event.clientY }; }} onPointerLeave={() => { zoomAnchorRef.current = null; }}>{asset ? <div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
+        <div className={`stage ${tool} ${panStart ? "panning" : ""}`} onDragOver={(event) => event.preventDefault()} onDrop={(event) => { event.preventDefault(); const projectFile = Array.from(event.dataTransfer.files).find((file) => file.name.toLowerCase().endsWith(".plgm")); if (projectFile) { if (saved || window.confirm(copy.replaceUnsavedProject)) void loadProjectFile(projectFile); } else files(event.dataTransfer.files); }}><div className="scroll" ref={scrollRef} onPointerMove={(event) => { zoomAnchorRef.current = { x: event.clientX, y: event.clientY }; }} onPointerLeave={() => { zoomAnchorRef.current = null; setCursorPoint(null); }}>{asset ? <div className="canvas" style={{ width: `${zoom}%`, aspectRatio: `${asset.width ?? 1000}/${asset.height ?? 650}` }}>
           {/* eslint-disable-next-line @next/next/no-img-element */}
           {asset.missing ? <div className="missing-image"><Images size={34} /><b>{asset.name}</b><p>{copy.imageMissingHint}</p><button onClick={() => input.current?.click()}><FolderOpen size={15} />{copy.reloadProjectImages}</button></div> : imageWindow.map((item) => <img key={item.id} className={item.id === asset.id && readyImageIds.includes(item.id) ? "image-current" : "image-preload"} crossOrigin="anonymous" src={item.src} alt={item.id === asset.id ? fill(copy.annotationImageAlt, { name: item.name }) : ""} aria-hidden={item.id === asset.id ? undefined : true} draggable={false} onLoad={(event) => { const image = event.currentTarget; if (item.width !== image.naturalWidth || item.height !== image.naturalHeight) setAssets((items) => items.map((candidate) => candidate.id === item.id ? { ...candidate, width: image.naturalWidth, height: image.naturalHeight } : candidate)); void image.decode().then(() => setReadyImageIds((ids) => ids.includes(item.id) ? ids : [...ids, item.id]), () => setReadyImageIds((ids) => ids.includes(item.id) ? ids : [...ids, item.id])); }} />)}
           {!asset.missing && imageIsReady && <svg ref={svgRef} viewBox="0 0 1000 650" preserveAspectRatio="none" onPointerDown={canvasPointerDown} onPointerMove={canvasPointerMove} onPointerUp={canvasPointerUp} onPointerCancel={canvasPointerUp} onAuxClick={(event) => event.preventDefault()} onContextMenu={finishDrawingWithRightClick} onDoubleClick={() => { if (tool === "polygon") finishPolygon(); if (tool === "line") finishLine(); }}>
+            {coordinatesGuide && cursorPoint && <g className="coordinate-guide" pointerEvents="none">
+              <line x1={cursorPoint.x} y1="0" x2={cursorPoint.x} y2="650" />
+              <line x1="0" y1={cursorPoint.y} x2="1000" y2={cursorPoint.y} />
+              <g transform={`translate(${Math.min(860, cursorPoint.x + 12)},${Math.min(625, Math.max(26, cursorPoint.y - 12))})`}>
+                <rect width="128" height="25" rx="5" />
+                <text x="8" y="17">X {Math.round(cursorPoint.x / 1000 * (asset.width ?? 1000))} · Y {Math.round(cursorPoint.y / 650 * (asset.height ?? 650))}</text>
+              </g>
+            </g>}
             {visibleAnnotations.map((annotation) => {
               const label = getLabel(annotation.label);
               const isSelected = multiSelected.includes(annotation.id);
@@ -1420,7 +1495,7 @@ export default function Home() {
                 {tool === "select" && isSelected && annotation.id === selected && multiSelected.length === 1 && (annotation.pts ?? []).map((coordinate, index, points) => index % 2 === 0 ? <ellipse className={`vertex-handle ${selectedVertex?.annotationId === annotation.id && selectedVertex.vertexIndex === index / 2 ? "selected" : ""}`} onPointerDown={(event) => beginVertexDrag(event, annotation, index / 2)} onPointerMove={moveVertexPointer} onPointerUp={finishVertexPointer} onPointerCancel={finishVertexPointer} key={index} cx={coordinate} cy={points[index + 1]} rx={polygonHandleRadius(handleScale)} ry={polygonHandleRadius(handleScale) * markerAspect} fill="#fff" stroke={label.color} strokeWidth={polygonHandleRadius(handleScale) * .42} /> : null)}
               </g>;
               const pointRadius = markerRadius * (isSelected ? 1.32 : 1);
-              return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><circle cx={annotation.x} cy={annotation.y} r={pointRadius} fill="#fff" stroke={label.color} strokeWidth={pointRadius * .42} /><circle cx={annotation.x} cy={annotation.y} r={pointRadius * .34} fill={label.color} /></g>;
+              return <g className={tool === "select" ? "movable-annotation" : ""} key={annotation.id} onPointerDown={(event) => beginAnnotationDrag(event, annotation)} onPointerMove={moveAnnotationPointer} onPointerUp={finishAnnotationPointer} onPointerCancel={finishAnnotationPointer}><ellipse cx={annotation.x} cy={annotation.y} rx={pointRadius} ry={pointRadius * markerAspect} fill="#fff" stroke={label.color} strokeWidth={pointRadius * .42} /><ellipse cx={annotation.x} cy={annotation.y} rx={pointRadius * .34} ry={pointRadius * .34 * markerAspect} fill={label.color} /></g>;
             })}
             {selectionMarquee && <rect className="selection-marquee" x={Math.min(selectionMarquee.startX, selectionMarquee.currentX)} y={Math.min(selectionMarquee.startY, selectionMarquee.currentY)} width={Math.abs(selectionMarquee.currentX - selectionMarquee.startX)} height={Math.abs(selectionMarquee.currentY - selectionMarquee.startY)} />}
             {tool === "transform" && activeAnnotation?.type === "polygon" && activePolygonBounds && activePolygonCenter && <g className="transform-overlay">
@@ -1468,7 +1543,7 @@ export default function Home() {
     {pendingDeleteAnnotations.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-annotations-title" aria-describedby="delete-annotations-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-annotations-title">{copy.confirmDeleteAnnotations}</h2><p>{pendingDeleteAnnotations.length} {copy.annotationsToDelete}</p></div></div><button onClick={() => setPendingDeleteAnnotationIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-annotations-description" className="delete-class-warning">{copy.deleteAnnotationsWarning}</p><div className="delete-class-impact"><span>{copy.annotationsToDelete}</span><b>{pendingDeleteAnnotations.length}</b></div><footer><button onClick={() => setPendingDeleteAnnotationIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingAnnotations}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
     {pendingDeleteClasses.length > 0 && <div className="modal-backdrop"><section className="sam-modal delete-class-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete-class-title" aria-describedby="delete-class-description"><header><div><span><Trash2 size={18} /></span><div><h2 id="delete-class-title">{pendingDeleteClasses.length === 1 ? copy.confirmDeleteClass : copy.confirmDeleteClasses}</h2><p>{pendingDeleteClasses.map((label) => label.name).join(", ")}</p></div></div><button onClick={() => setPendingDeleteClassIds([])} aria-label={copy.close}><X size={19} /></button></header><p id="delete-class-description" className="delete-class-warning">{copy.deleteClassWarning} <strong>{copy.unlabeled}</strong>.</p><div className="delete-class-impact"><span>{copy.affectedAnnotations}</span><b>{pendingAffectedAnnotations}</b></div><footer><button onClick={() => setPendingDeleteClassIds([])}>{copy.cancel}</button><button className="danger" onClick={deletePendingClasses}><Trash2 size={14} />{copy.confirmDelete}</button></footer></section></div>}
     {preferencesOpen && <div className="modal-backdrop"><section className="sam-modal preferences-modal" role="dialog" aria-modal="true" aria-labelledby="preferences-title"><header><div><span><Settings2 size={18} /></span><div><h2 id="preferences-title">{copy.preferences}</h2><p>poligome.com</p></div></div><button onClick={() => setPreferencesOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="preferences-tabs"><button className={preferencesTab === "appearance" ? "active" : ""} onClick={() => setPreferencesTab("appearance")}><Sun size={14} />{copy.appearance}</button><button className={preferencesTab === "language" ? "active" : ""} onClick={() => setPreferencesTab("language")}><Languages size={14} />{copy.language}</button></div>{preferencesTab === "appearance" ? <div className="preference-options"><button className={themeMode === "system" ? "active" : ""} onClick={() => setThemeMode("system")}><Monitor size={20} /><b>{copy.system}</b></button><button className={themeMode === "light" ? "active" : ""} onClick={() => setThemeMode("light")}><Sun size={20} /><b>{copy.light}</b></button><button className={themeMode === "dark" ? "active" : ""} onClick={() => setThemeMode("dark")}><Moon size={20} /><b>{copy.dark}</b></button></div> : <div className="language-options"><button className={language === "pt" ? "active" : ""} onClick={() => setLanguage("pt")}><b>Português</b><span>PT-BR</span></button><button className={language === "en" ? "active" : ""} onClick={() => setLanguage("en")}><b>English</b><span>EN</span></button><button className={language === "fr" ? "active" : ""} onClick={() => setLanguage("fr")}><b>Français</b><span>FR</span></button><button className={language === "es" ? "active" : ""} onClick={() => setLanguage("es")}><b>Español</b><span>ES</span></button></div>}<footer><button className="connect" onClick={() => setPreferencesOpen(false)}><Check size={15} /> {copy.close}</button></footer></section></div>}
-    {samOpen && <div className="modal-backdrop"><section className="sam-modal sam-local-modal" role="dialog" aria-modal="true" aria-labelledby="sam-title"><header><div><span><WandSparkles size={18} /></span><div><h2 id="sam-title">{copy.samTitle}</h2><p>{copy.samSubtitle}</p></div></div><button onClick={() => setSamOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="hardware-warning"><b>{copy.beforeRun}</b><p><strong>{copy.samHardwareRecommended}</strong> {copy.samHardwareDetail}</p><p>{copy.samInstallerDetail}</p></div><div className="sam-oneclick"><b>{copy.oneClickSetup}</b><p>{copy.oneClickHint}</p><div><a className="primary" href="/epiaka-sam-windows.bat" download><Download size={15} /><span><strong>{copy.windowsInstaller}</strong><small>Windows 10/11</small></span></a><a href="/epiaka-sam-macos-linux.sh" download><Download size={15} /><span><strong>{copy.unixInstaller}</strong><small>macOS · Linux</small></span></a></div><small>{copy.autoDownloadModel}</small></div><div className="sam-relaunch"><div><b>{copy.installedAlready}</b><p>{copy.restartServerHint}</p></div><div><a className="windows" href="/epiaka-sam-start-windows.bat" download><Power size={14} />{copy.restartWindows}</a><a href="/epiaka-sam-start-macos-linux.sh" download><Power size={14} />{copy.restartUnix}</a></div></div><div className={`sam-status ${samConnectionState}`}><span /> <b>{samConnectionState === "ready" ? copy.samReady : samConnectionState === "loading" ? copy.samLoadingModel : samConnectionState === "checking" ? copy.samChecking : copy.samOffline}</b>{samRuntime && <small>{samRuntime}</small>}</div><details className="sam-advanced"><summary>{copy.advancedSetup}</summary><div className="sam-setup"><b>{copy.manualSetup}</b><ol><li><a href="https://github.com/facebookresearch/segment-anything#model-checkpoints" target="_blank" rel="noreferrer"><Download size={13} /> {copy.checkpointPage}</a></li><li><a href="/epiaka-sam-local.py" download><Download size={13} /> {copy.connectorDownload}</a></li><li>{copy.samManualStep} <code>.pth</code>.</li></ol><pre>python epiaka-sam-local.py --checkpoint sam_vit_b_01ec64.pth</pre></div><label>{copy.localAddress}<input type="url" placeholder="http://127.0.0.1:7860/predict" value={samEndpointDraft} onChange={(event) => setSamEndpointDraft(event.target.value)} /></label></details><div className="sam-contract"><b>{copy.noUpload}</b><p>{copy.samPrivacyIntro} <code>localhost</code>{copy.samPrivacyDetail}</p></div><footer><button onClick={() => setSamOpen(false)}>{copy.cancel}</button><button className="connect" disabled={samConnectionState === "checking"} onClick={() => void connectSam()}>{samConnectionState === "checking" ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} {copy.verifyUse}</button></footer></section></div>}
+    {samOpen && <div className="modal-backdrop"><section className="sam-modal sam-local-modal" role="dialog" aria-modal="true" aria-labelledby="sam-title"><header><div><span><WandSparkles size={18} /></span><div><h2 id="sam-title">{copy.samTitle}</h2><p>{copy.samSubtitle}</p></div></div><button onClick={() => setSamOpen(false)} aria-label={copy.close}><X size={19} /></button></header><div className="hardware-warning"><b>{copy.beforeRun}</b><p><strong>{copy.samHardwareRecommended}</strong> {copy.samHardwareDetail}</p><p>{copy.samInstallerDetail}</p></div><div className="sam-oneclick"><b>{copy.oneClickSetup}</b><p>{copy.oneClickHint}</p><div><a className="primary" href="/poligome-sam-windows.bat" download><Download size={15} /><span><strong>{copy.windowsInstaller}</strong><small>Windows 10/11</small></span></a><a href="/poligome-sam-macos-linux.sh" download><Download size={15} /><span><strong>{copy.unixInstaller}</strong><small>macOS · Linux</small></span></a></div><small>{copy.autoDownloadModel}</small></div><div className="sam-relaunch"><div><b>{copy.installedAlready}</b><p>{copy.restartServerHint}</p></div><div><a className="windows" href="/poligome-sam-start-windows.bat" download><Power size={14} />{copy.restartWindows}</a><a href="/poligome-sam-start-macos-linux.sh" download><Power size={14} />{copy.restartUnix}</a></div></div><div className={`sam-status ${samConnectionState}`}><span /> <b>{samConnectionState === "ready" ? copy.samReady : samConnectionState === "loading" ? copy.samLoadingModel : samConnectionState === "checking" ? copy.samChecking : copy.samOffline}</b>{samRuntime && <small>{samRuntime}</small>}</div><details className="sam-advanced"><summary>{copy.advancedSetup}</summary><div className="sam-setup"><b>{copy.manualSetup}</b><ol><li><a href="https://github.com/facebookresearch/segment-anything#model-checkpoints" target="_blank" rel="noreferrer"><Download size={13} /> {copy.checkpointPage}</a></li><li><a href="/poligome-sam-local.py" download><Download size={13} /> {copy.connectorDownload}</a></li><li>{copy.samManualStep} <code>.pth</code>.</li></ol><pre>python poligome-sam-local.py --checkpoint sam_vit_b_01ec64.pth</pre></div><label>{copy.localAddress}<input type="url" placeholder="http://127.0.0.1:7860/predict" value={samEndpointDraft} onChange={(event) => setSamEndpointDraft(event.target.value)} /></label></details><div className="sam-contract"><b>{copy.noUpload}</b><p>{copy.samPrivacyIntro} <code>localhost</code>{copy.samPrivacyDetail}</p></div><footer><button onClick={() => setSamOpen(false)}>{copy.cancel}</button><button className="connect" disabled={samConnectionState === "checking"} onClick={() => void connectSam()}>{samConnectionState === "checking" ? <LoaderCircle className="spin" size={15} /> : <Link2 size={15} />} {copy.verifyUse}</button></footer></section></div>}
     {(leftOpen || rightOpen) && <button className="backdrop" onClick={() => { setLeftOpen(false); setRightOpen(false); }} aria-label={copy.closePanel} />}
     {toast && <div className="toast" role="status"><Check size={15} />{toast}</div>}
   </main>;
