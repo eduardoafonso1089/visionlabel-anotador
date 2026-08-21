@@ -7,12 +7,12 @@ import type { Language } from "./lib/i18n";
 
 // Símbolo geométrico nativo da marca; o texto segue a fonte já carregada pelo app.
 function BrandLockup({ height = 34 }: { height?: number }) {
-  return <span className="brand-lockup" role="img" aria-label="poligome.com">
+  return <span className="brand-lockup" role="img" aria-label="Poligome">
     <svg viewBox="0 0 40 40" height={height} aria-hidden="true">
       <path d="M20 2 35 11v18L20 38 5 29V11z" fill="currentColor" />
       <path d="m14 13 12 7-12 7z" fill="var(--surface)" />
     </svg>
-    <strong>poligome<span>.com</span></strong>
+    <strong>Poligome</strong>
   </span>;
 }
 
@@ -80,9 +80,15 @@ export default function Landing() {
       <p className="landing-intro">{copy.landingIntro}</p>
       <div className="landing-actions">
         <a className="landing-cta" href="/anotar">{copy.landingCta}</a>
+        <a className="landing-cta secondary" href="/texto">LLM / Text Annotation</a>
         <span className="landing-free-badge"><Check size={13} aria-hidden="true" />{copy.landingBadgeFree}</span>
       </div>
       <p className="landing-cta-note">{copy.landingCtaNote}</p>
+    </section>
+
+    <section className="landing-projects" aria-label="Tipos de projeto">
+      <a href="/anotar"><Box size={20} /><div><b>Computer Vision</b><span>Imagens, polígonos, máscaras e bounding boxes.</span></div><span>→</span></a>
+      <a href="/texto"><FileArchive size={20} /><div><b>LLM / Text</b><span>Classificação, avaliação, comparação e correção de respostas.</span></div><span>→</span></a>
     </section>
 
     <section className="landing-claims">
