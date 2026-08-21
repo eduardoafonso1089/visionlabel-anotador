@@ -1073,30 +1073,39 @@ export default function Home() {
     finally { setExporting(false); }
   }
 
-  async function probeSam(endpoint: string) {
-    setSamConnectionState("checking");
+  function samBaseUrl(endpoint: string) {
     try {
       const url = new URL(endpoint);
-      if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) {
-        setSamConnectionState("offline"); setSamRuntime(""); setSamLoadedModelId(null); return { ready: false, modelId: null };
-      }
-      const healthUrl = `${url.origin}${url.pathname.replace(/\/predict\/?$/, "")}/health`;
-      const response = await fetch(healthUrl, { signal: AbortSignal.timeout(6_000) });
+      if (!["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)) return null;
+      return `${url.origin}${url.pathname.replace(/\/predict\/?$/, "")}`;
+    } catch { return null; }
+  }
+
+  async function probeSam(endpoint: string): Promise<{ ready: boolean; modelId: string | null; state: SamConnectionState }> {
+    setSamConnectionState("checking");
+    const base = samBaseUrl(endpoint);
+    if (!base) {
+      setSamConnectionState("offline"); setSamRuntime(""); setSamLoadedModelId(null);
+      return { ready: false, modelId: null, state: "offline" };
+    }
+    try {
+      const response = await fetch(`${base}/health`, { signal: AbortSignal.timeout(6_000) });
       if (!response.ok) throw new Error();
       const health = await response.json() as { status?: string; device?: string; model_type?: string; model_id?: string; family?: string; error?: string };
-      const legacyModelIds: Record<string, string> = { vit_b: "sam1-vit-b", vit_l: "sam1-vit-l", vit_h: "sam1-vit-h" };
-      const modelId = health.model_id ?? (health.model_type ? legacyModelIds[health.model_type] : null) ?? null;
+      const modelId = health.model_id ?? null;
       const modelName = modelId ? getSamModel(modelId)?.name ?? modelId : health.model_type;
       setSamLoadedModelId(modelId);
       setSamRuntime([modelName, health.device, health.error].filter(Boolean).join(" · "));
       if (health.status !== "ready") {
-        setSamConnectionState(health.status === "error" ? "error" : "loading");
-        return { ready: false, modelId };
+        const state: SamConnectionState = health.status === "error" ? "error" : "loading";
+        setSamConnectionState(state);
+        return { ready: false, modelId, state };
       }
       setSamConnectionState("ready");
-      return { ready: true, modelId };
+      return { ready: true, modelId, state: "ready" };
     } catch {
-      setSamConnectionState("offline"); setSamRuntime(""); setSamLoadedModelId(null); return { ready: false, modelId: null };
+      setSamConnectionState("offline"); setSamRuntime(""); setSamLoadedModelId(null);
+      return { ready: false, modelId: null, state: "offline" };
     }
   }
   function openSamSettings() {
@@ -1112,11 +1121,50 @@ export default function Home() {
       return;
     }
     if (health.modelId !== samModelId) {
-      showToast(`O conector está usando ${health.modelId ?? "um modelo desconhecido"}. Reinicie-o com ${samModelId}.`);
-      return;
+      const switched = await switchSamModel(endpoint, samModelId);
+      if (!switched) return;
     }
     setSamEndpoint(endpoint); localStorage.setItem("visionlabel-sam-endpoint", endpoint);
     clearSam(); setSamPromptMode(1); setSamOpen(false); setTool("sam"); showToast(`${selectedSamModel.name} conectado. Clique sobre o objeto na imagem.`);
+  }
+
+  // Pede ao conector que recarregue outro modelo e acompanha até o /health confirmar.
+  async function switchSamModel(endpoint: string, modelId: SamModelId) {
+    const base = samBaseUrl(endpoint);
+    if (!base) { showToast("Endereço do conector inválido."); return false; }
+    setSamConnectionState("loading");
+    setSamRuntime(`Carregando ${getSamModel(modelId)?.name ?? modelId}…`);
+    try {
+      const response = await fetch(`${base}/load`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ model_id: modelId }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null) as { detail?: unknown } | null;
+        showToast(typeof body?.detail === "string" ? body.detail : `O conector recusou a troca (HTTP ${response.status}).`);
+        await probeSam(endpoint);
+        return false;
+      }
+    } catch {
+      showToast("Não foi possível falar com o conector local para trocar de modelo.");
+      setSamConnectionState("offline");
+      return false;
+    }
+    // O conector se reinicia para carregar o modelo, então a porta cai por instantes.
+    // 400 tentativas de 1,5 s cobrem os 10 minutos do carregamento mais lento.
+    for (let attempt = 0; attempt < 400; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 1_500));
+      const health = await probeSam(endpoint);
+      if (health.ready && health.modelId === modelId) return true;
+      if (health.state === "error") {
+        showToast(`O conector falhou ao carregar ${modelId}.`);
+        return false;
+      }
+    }
+    showToast(`Tempo esgotado ao carregar ${modelId}.`);
+    return false;
   }
   function activateSam() {
     if (tool === "sam") {

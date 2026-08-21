@@ -2,18 +2,36 @@
 chcp 65001 >nul
 setlocal EnableExtensions EnableDelayedExpansion
 title VisionLabel SAM local - instalar modelo
+set "VISIONLABEL_SAM_WINDOWS_INSTALLER_API=2"
 
 set "DEFAULT_SITE_URL=https://visionlabel-anotador.eduardo1089.chatgpt.site"
+set "DEFAULT_ASSET_BASE_URL=https://raw.githubusercontent.com/eduardoafonso1089/epiaka/main/public"
+set "DEFAULT_CONNECTOR_URL=https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/visionlabel-sam-local.py"
+set "DEFAULT_CONNECTOR_SHA256=2b7a75bec318cf3c785913c00d53075710012f0944af40de68a0b9a6e4ac67dd"
 set "SITE_URL=%VISIONLABEL_SITE_URL%"
 if not defined SITE_URL set "SITE_URL=%DEFAULT_SITE_URL%"
 if "!SITE_URL:~-1!"=="/" set "SITE_URL=!SITE_URL:~0,-1!"
+set "ASSET_BASE_URL=%VISIONLABEL_ASSET_BASE_URL%"
+if defined ASSET_BASE_URL (
+  set "ASSET_BASE_OVERRIDDEN=1"
+  if "!ASSET_BASE_URL:~-1!"=="/" set "ASSET_BASE_URL=!ASSET_BASE_URL:~0,-1!"
+  set "CONNECTOR_URL=!ASSET_BASE_URL!/visionlabel-sam-local.py"
+  set "CONNECTOR_SHA256="
+) else (
+  set "ASSET_BASE_OVERRIDDEN="
+  set "ASSET_BASE_URL=%DEFAULT_ASSET_BASE_URL%"
+  set "CONNECTOR_URL=%DEFAULT_CONNECTOR_URL%"
+  set "CONNECTOR_SHA256=%DEFAULT_CONNECTOR_SHA256%"
+)
 set "APP_DIR=%LOCALAPPDATA%\VisionLabelSAM"
+set "BIN_DIR=%APP_DIR%\bin"
+set "INSTALLER_CACHE=%BIN_DIR%\visionlabel-sam-windows.bat"
 set "VENVS_DIR=%APP_DIR%\venvs"
 set "MODELS_DIR=%APP_DIR%\models"
 set "CONNECTOR=%APP_DIR%\visionlabel-sam-local.py"
 set "SELECTED_MODEL_FILE=%APP_DIR%\selected-model.txt"
+set "PENDING_MODEL_FILE=%APP_DIR%\pending-model.txt"
 set "PORT=7860"
-set "SAM1_REVISION=dca509fe793f601edb92606367a655c15ac00fdf"
 
 if /I "%~1"=="--help" goto :help
 if /I "%~1"=="-h" goto :help
@@ -21,144 +39,55 @@ if /I "%~1"=="/?" goto :help
 if not "%~2"=="" goto :too_many_args
 call :validate_site_url
 if errorlevel 1 goto :site_error
+call :derive_site_origin
+if errorlevel 1 goto :site_error
+call :validate_asset_base_url
+if errorlevel 1 goto :asset_base_error
 
 set "MODEL_ID=%~1"
 if not defined MODEL_ID (
   call :choose_model
   if errorlevel 1 goto :invalid_model
 )
-if /I "!MODEL_ID!"=="sam3" set "MODEL_ID=sam3-concepts"
+call :normalize_model_id
+if errorlevel 1 goto :invalid_model
 
 call :set_model_metadata
 if errorlevel 1 goto :invalid_model
-if /I "!FAMILY!"=="wsl" goto :install_wsl_model
-
-echo.
-echo ==========================================
-echo  VisionLabel SAM local - !MODEL_ID!
-echo ==========================================
-echo.
-
-if not exist "%APP_DIR%" mkdir "%APP_DIR%"
-if not exist "%VENVS_DIR%" mkdir "%VENVS_DIR%"
-if not exist "%MODELS_DIR%" mkdir "%MODELS_DIR%"
-
-call :find_python
-if errorlevel 1 goto :python_error
-
-if not exist "!VENV_DIR!\Scripts\python.exe" (
-  echo Criando ambiente isolado da família SAM 1...
-  if defined USE_PY_LAUNCHER (
-    py -3 -m venv "!VENV_DIR!"
-  ) else (
-    "!SYSTEM_PYTHON!" -m venv "!VENV_DIR!"
-  )
-  if errorlevel 1 goto :venv_error
-)
-set "PYTHON=!VENV_DIR!\Scripts\python.exe"
-
-set "READY_FILE=!VENV_DIR!\.visionlabel-sam1-!SAM1_REVISION!.ok"
-if exist "!READY_FILE!" (
-  "!PYTHON!" -c "import cv2, fastapi, segment_anything, torch, uvicorn" >nul 2>nul
-  if not errorlevel 1 goto :dependencies_ready
-)
-
-echo Instalando PyTorch e dependências oficiais do SAM 1. Aguarde...
-"!PYTHON!" -m pip install --upgrade pip setuptools wheel
-if errorlevel 1 goto :install_error
-"!PYTHON!" -m pip install torch torchvision
-if errorlevel 1 goto :install_error
-"!PYTHON!" -m pip install "https://github.com/facebookresearch/segment-anything/archive/!SAM1_REVISION!.zip"
-if errorlevel 1 goto :install_error
-"!PYTHON!" -m pip install fastapi uvicorn pillow opencv-python-headless numpy
-if errorlevel 1 goto :install_error
->"!READY_FILE!" echo pronto
-
-:dependencies_ready
-call :download_connector
-if errorlevel 1 goto :connector_error
-
-call :migrate_legacy_vit_b
-if errorlevel 1 goto :migration_error
-
-if not exist "!CHECKPOINT!" (
-  echo Baixando checkpoint oficial !CHECKPOINT_NAME!...
-  if not exist "!MODEL_DIR!" mkdir "!MODEL_DIR!"
-  set "CHECKPOINT_PART=!CHECKPOINT!.part"
-  powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='Continue'; Invoke-WebRequest -UseBasicParsing -Uri $env:MODEL_URL -OutFile $env:CHECKPOINT_PART; if ((Get-Item -LiteralPath $env:CHECKPOINT_PART).Length -le 0) { exit 2 }"
-  if errorlevel 1 goto :download_error
-  move /Y "!CHECKPOINT_PART!" "!CHECKPOINT!" >nul
-  if errorlevel 1 goto :download_error
-)
-
-call :save_windows_selection
+call :cache_windows_installer
 if errorlevel 1 goto :state_error
-
-echo.
-echo Modelo !MODEL_ID! instalado e selecionado.
-echo A seleção foi salva em !SELECTED_MODEL_FILE!.
-start "" "!SITE_URL!"
-
-call :server_is_running
-if not errorlevel 1 (
-  echo.
-  echo Já existe um conector em execução na porta !PORT!.
-  echo Feche a janela antiga e use o iniciador para carregar !MODEL_ID!.
-  exit /b 0
-)
-
-echo Mantenha esta janela aberta enquanto usar o SAM.
-echo.
-set "VISIONLABEL_ALLOWED_ORIGINS=!SITE_URL!,http://localhost:5173,http://127.0.0.1:5173"
-"!PYTHON!" "!CONNECTOR!" --model "!MODEL_ID!" --checkpoint "!CHECKPOINT!" --device auto --port !PORT!
-echo.
-echo O conector foi encerrado. Execute o iniciador para abri-lo novamente.
-pause
-exit /b 0
+call :stage_windows_selection
+if errorlevel 1 goto :state_error
+goto :install_wsl_model
 
 :choose_model
 echo.
 echo Escolha o modelo:
 echo.
-echo   1^) SAM 1 ViT-B          ^(~375 MB; imagem^)
-echo   2^) SAM 1 ViT-L          ^(~1,25 GB; imagem^)
-echo   3^) SAM 1 ViT-H          ^(~2,56 GB; imagem^)
-echo   4^) SAM 2.1 Hiera Tiny   ^(instalação automática no WSL2^)
-echo   5^) SAM 2.1 Hiera Small  ^(WSL2; recomendado^)
-echo   6^) SAM 2.1 Hiera Base+  ^(instalação automática no WSL2^)
-echo   7^) SAM 2.1 Hiera Large  ^(instalação automática no WSL2^)
-echo   8^) SAM 3 Concepts       ^(WSL2 + GPU NVIDIA^)
+echo   1^) SAM 2.1 Hiera Tiny   ^(instalação automática no WSL2^)
+echo   2^) SAM 2.1 Hiera Small  ^(WSL2; recomendado^)
+echo   3^) SAM 2.1 Hiera Base+  ^(instalação automática no WSL2^)
+echo   4^) SAM 2.1 Hiera Large  ^(instalação automática no WSL2^)
+echo   5^) SAM 3 Concepts       ^(WSL2 + GPU NVIDIA^)
 echo.
-set /p "MODEL_CHOICE=Digite 1-8 ou o ID completo: "
+set /p "MODEL_CHOICE=Digite 1-5 ou o ID completo: "
 if "!MODEL_CHOICE!"=="1" (
-  set "MODEL_ID=sam1-vit-b"
-  exit /b 0
-)
-if "!MODEL_CHOICE!"=="2" (
-  set "MODEL_ID=sam1-vit-l"
-  exit /b 0
-)
-if "!MODEL_CHOICE!"=="3" (
-  set "MODEL_ID=sam1-vit-h"
-  exit /b 0
-)
-if "!MODEL_CHOICE!"=="4" (
   set "MODEL_ID=sam2.1-hiera-tiny"
   exit /b 0
 )
-if "!MODEL_CHOICE!"=="5" (
+if "!MODEL_CHOICE!"=="2" (
   set "MODEL_ID=sam2.1-hiera-small"
   exit /b 0
 )
-if "!MODEL_CHOICE!"=="6" (
+if "!MODEL_CHOICE!"=="3" (
   set "MODEL_ID=sam2.1-hiera-base-plus"
   exit /b 0
 )
-if "!MODEL_CHOICE!"=="7" (
+if "!MODEL_CHOICE!"=="4" (
   set "MODEL_ID=sam2.1-hiera-large"
   exit /b 0
 )
-if "!MODEL_CHOICE!"=="8" (
+if "!MODEL_CHOICE!"=="5" (
   set "MODEL_ID=sam3-concepts"
   exit /b 0
 )
@@ -166,112 +95,54 @@ set "MODEL_ID=!MODEL_CHOICE!"
 if not defined MODEL_ID exit /b 1
 exit /b 0
 
-:set_model_metadata
-set "FAMILY=sam1"
-set "VENV_DIR=%VENVS_DIR%\sam1"
-if /I "!MODEL_ID!"=="sam1-vit-b" (
-  set "CHECKPOINT_NAME=sam_vit_b_01ec64.pth"
-  set "MODEL_URL=https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-  goto :model_metadata_ready
-)
-if /I "!MODEL_ID!"=="sam1-vit-l" (
-  set "CHECKPOINT_NAME=sam_vit_l_0b3195.pth"
-  set "MODEL_URL=https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth"
-  goto :model_metadata_ready
-)
-if /I "!MODEL_ID!"=="sam1-vit-h" (
-  set "CHECKPOINT_NAME=sam_vit_h_4b8939.pth"
-  set "MODEL_URL=https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
-  goto :model_metadata_ready
-)
+:normalize_model_id
 if /I "!MODEL_ID!"=="sam2.1-hiera-tiny" (
-  set "FAMILY=wsl"
+  set "MODEL_ID=sam2.1-hiera-tiny"
   exit /b 0
 )
 if /I "!MODEL_ID!"=="sam2.1-hiera-small" (
-  set "FAMILY=wsl"
+  set "MODEL_ID=sam2.1-hiera-small"
   exit /b 0
 )
 if /I "!MODEL_ID!"=="sam2.1-hiera-base-plus" (
-  set "FAMILY=wsl"
+  set "MODEL_ID=sam2.1-hiera-base-plus"
   exit /b 0
 )
 if /I "!MODEL_ID!"=="sam2.1-hiera-large" (
-  set "FAMILY=wsl"
+  set "MODEL_ID=sam2.1-hiera-large"
+  exit /b 0
+)
+if /I "!MODEL_ID!"=="sam3" (
+  set "MODEL_ID=sam3-concepts"
   exit /b 0
 )
 if /I "!MODEL_ID!"=="sam3-concepts" (
-  set "FAMILY=wsl"
+  set "MODEL_ID=sam3-concepts"
   exit /b 0
 )
 exit /b 1
 
-:model_metadata_ready
-set "MODEL_DIR=%MODELS_DIR%\!MODEL_ID!"
-set "CHECKPOINT=!MODEL_DIR!\!CHECKPOINT_NAME!"
-exit /b 0
-
-:find_python
-set "USE_PY_LAUNCHER="
-set "SYSTEM_PYTHON="
-where py >nul 2>nul
-if not errorlevel 1 (
-  py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
-  if not errorlevel 1 (
-    set "USE_PY_LAUNCHER=1"
-    exit /b 0
-  )
-)
-where python >nul 2>nul
-if not errorlevel 1 (
-  for /f "delims=" %%P in ('where python') do if not defined SYSTEM_PYTHON set "SYSTEM_PYTHON=%%P"
-  "!SYSTEM_PYTHON!" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 10) else 1)" >nul 2>nul
-  if not errorlevel 1 exit /b 0
-  set "SYSTEM_PYTHON="
-)
-where winget >nul 2>nul
-if errorlevel 1 exit /b 1
-echo Python 3.10+ não foi encontrado. Instalando Python 3.11 no perfil do usuário...
-winget install -e --id Python.Python.3.11 --scope user --accept-package-agreements --accept-source-agreements
-if errorlevel 1 exit /b 1
-set "SYSTEM_PYTHON=%LOCALAPPDATA%\Programs\Python\Python311\python.exe"
-if not exist "!SYSTEM_PYTHON!" exit /b 1
-exit /b 0
-
-:download_connector
-set "CONNECTOR_URL=!SITE_URL!/visionlabel-sam-local.py"
-set "CONNECTOR_PART=!CONNECTOR!.part"
-echo Baixando o conector canônico do VisionLabel...
-powershell -NoProfile -ExecutionPolicy Bypass -Command "$ProgressPreference='Continue'; Invoke-WebRequest -UseBasicParsing -Uri $env:CONNECTOR_URL -OutFile $env:CONNECTOR_PART; if ((Get-Item -LiteralPath $env:CONNECTOR_PART).Length -le 0) { exit 2 }"
-if errorlevel 1 exit /b 1
-findstr /C:"--model" "!CONNECTOR_PART!" >nul 2>nul
-if errorlevel 1 (
-  del /Q "!CONNECTOR_PART!" >nul 2>nul
-  exit /b 1
-)
-move /Y "!CONNECTOR_PART!" "!CONNECTOR!" >nul
-if errorlevel 1 exit /b 1
-exit /b 0
-
-:migrate_legacy_vit_b
-if /I not "!MODEL_ID!"=="sam1-vit-b" exit /b 0
-if exist "!CHECKPOINT!" exit /b 0
-set "LEGACY_CHECKPOINT=%APP_DIR%\sam_vit_b_01ec64.pth"
-if not exist "!LEGACY_CHECKPOINT!" exit /b 0
-echo Instalação ViT-B antiga encontrada; preservando o original e copiando-o para o novo layout...
-if not exist "!MODEL_DIR!" mkdir "!MODEL_DIR!"
-copy /Y "!LEGACY_CHECKPOINT!" "!CHECKPOINT!.part" >nul
-if errorlevel 1 exit /b 1
-move /Y "!CHECKPOINT!.part" "!CHECKPOINT!" >nul
-if errorlevel 1 exit /b 1
-exit /b 0
-
-:server_is_running
-powershell -NoProfile -ExecutionPolicy Bypass -Command "try { $response=Invoke-WebRequest -UseBasicParsing -Uri ('http://127.0.0.1:' + $env:PORT + '/health') -TimeoutSec 2; if ($response.StatusCode -eq 200) { exit 0 } } catch {}; exit 1" >nul 2>nul
-exit /b %ERRORLEVEL%
+:set_model_metadata
+set "FAMILY=wsl"
+if /I "!MODEL_ID!"=="sam2.1-hiera-tiny" exit /b 0
+if /I "!MODEL_ID!"=="sam2.1-hiera-small" exit /b 0
+if /I "!MODEL_ID!"=="sam2.1-hiera-base-plus" exit /b 0
+if /I "!MODEL_ID!"=="sam2.1-hiera-large" exit /b 0
+if /I "!MODEL_ID!"=="sam3-concepts" exit /b 0
+exit /b 1
 
 :validate_site_url
 powershell -NoProfile -ExecutionPolicy Bypass -Command "$uri=$null; if (-not [Uri]::TryCreate($env:SITE_URL,[UriKind]::Absolute,[ref]$uri)) { exit 1 }; if ($uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or $env:SITE_URL -match '\s') { exit 1 }; exit 0" >nul 2>nul
+exit /b %ERRORLEVEL%
+
+:derive_site_origin
+set "SITE_ORIGIN="
+for /f "delims=" %%O in ('powershell -NoProfile -ExecutionPolicy Bypass -Command "$builder=New-Object System.UriBuilder($env:SITE_URL); if ($builder.Port -eq 443) { $builder.Port=-1 }; $builder.Uri.GetLeftPart([System.UriPartial]::Authority)"') do set "SITE_ORIGIN=%%O"
+if not defined SITE_ORIGIN exit /b 1
+exit /b 0
+
+:validate_asset_base_url
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$uri=$null; if (-not [Uri]::TryCreate($env:ASSET_BASE_URL,[UriKind]::Absolute,[ref]$uri)) { exit 1 }; if ($uri.Scheme -ne 'https' -or $uri.UserInfo -or $uri.Query -or $uri.Fragment -or $env:ASSET_BASE_URL -match '\s') { exit 1 }; exit 0" >nul 2>nul
 exit /b %ERRORLEVEL%
 
 :validate_wsl
@@ -285,21 +156,69 @@ wsl.exe -- bash -lc "command -v curl >/dev/null 2>&1 || command -v wget >/dev/nu
 if errorlevel 1 exit /b 4
 exit /b 0
 
-:enable_wsl_site_url
+:enable_wsl_urls
 set "VISIONLABEL_SITE_URL=!SITE_URL!"
-if defined WSLENV (
-  set "WSLENV=VISIONLABEL_SITE_URL:!WSLENV!"
+set "VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL=!ASSET_BASE_URL!"
+set "VISIONLABEL_WINDOWS_PENDING_FILE=!PENDING_MODEL_FILE!"
+set "VISIONLABEL_WINDOWS_SELECTED_FILE=!SELECTED_MODEL_FILE!"
+if defined ASSET_BASE_OVERRIDDEN (
+  set "VISIONLABEL_ASSET_BASE_URL=!ASSET_BASE_URL!"
+  set "WSL_URL_VARIABLES=VISIONLABEL_SITE_URL:VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL:VISIONLABEL_ASSET_BASE_URL"
 ) else (
-  set "WSLENV=VISIONLABEL_SITE_URL"
+  set "VISIONLABEL_ASSET_BASE_URL="
+  set "WSL_URL_VARIABLES=VISIONLABEL_SITE_URL:VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL"
+)
+if defined WSLENV (
+  set "WSLENV=!WSL_URL_VARIABLES!:VISIONLABEL_WINDOWS_PENDING_FILE/p:VISIONLABEL_WINDOWS_SELECTED_FILE/p:!WSLENV!"
+) else (
+  set "WSLENV=!WSL_URL_VARIABLES!:VISIONLABEL_WINDOWS_PENDING_FILE/p:VISIONLABEL_WINDOWS_SELECTED_FILE/p"
 )
 exit /b 0
 
-:save_windows_selection
-if not exist "!APP_DIR!" mkdir "!APP_DIR!"
+:stage_windows_selection
+if not exist "!APP_DIR!" (
+  mkdir "!APP_DIR!"
+  if errorlevel 1 exit /b 1
+)
+>"!PENDING_MODEL_FILE!.part" echo !MODEL_ID!
 if errorlevel 1 exit /b 1
->"!SELECTED_MODEL_FILE!.part" echo !MODEL_ID!
+move /Y "!PENDING_MODEL_FILE!.part" "!PENDING_MODEL_FILE!" >nul
 if errorlevel 1 exit /b 1
-move /Y "!SELECTED_MODEL_FILE!.part" "!SELECTED_MODEL_FILE!" >nul
+exit /b 0
+
+:cache_windows_installer
+if not exist "!APP_DIR!" (
+  mkdir "!APP_DIR!"
+  if errorlevel 1 exit /b 1
+)
+if not exist "!BIN_DIR!" (
+  mkdir "!BIN_DIR!"
+  if errorlevel 1 exit /b 1
+)
+copy /Y "%~f0" "!INSTALLER_CACHE!.part" >nul
+if errorlevel 1 exit /b 1
+set "INSTALLER_CANDIDATE=!INSTALLER_CACHE!.part"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "$marker='set '+[char]34+'VISIONLABEL_SAM_WINDOWS_INSTALLER_API=2'+[char]34; if (-not (Select-String -LiteralPath $env:INSTALLER_CANDIDATE -SimpleMatch $marker -Quiet)) { exit 1 }; exit 0" >nul 2>nul
+if errorlevel 1 (
+  del /Q "!INSTALLER_CACHE!.part" >nul 2>nul
+  exit /b 1
+)
+move /Y "!INSTALLER_CACHE!.part" "!INSTALLER_CACHE!" >nul
+if errorlevel 1 exit /b 1
+exit /b 0
+
+:commit_windows_selection
+if not exist "!PENDING_MODEL_FILE!" (
+  if not exist "!SELECTED_MODEL_FILE!" exit /b 1
+  set "ACTIVE_MODEL_ID="
+  set /p "ACTIVE_MODEL_ID="<"!SELECTED_MODEL_FILE!"
+  if "!ACTIVE_MODEL_ID!"=="!MODEL_ID!" exit /b 0
+  exit /b 1
+)
+set "STAGED_MODEL_ID="
+set /p "STAGED_MODEL_ID="<"!PENDING_MODEL_FILE!"
+if not "!STAGED_MODEL_ID!"=="!MODEL_ID!" exit /b 1
+move /Y "!PENDING_MODEL_FILE!" "!SELECTED_MODEL_FILE!" >nul
 if errorlevel 1 exit /b 1
 exit /b 0
 
@@ -319,16 +238,17 @@ if errorlevel 3 goto :wsl2_required
 if errorlevel 2 goto :wsl_distro_error
 if errorlevel 1 goto :wsl_missing
 
-call :save_windows_selection
-if errorlevel 1 goto :state_error
-call :enable_wsl_site_url
+call :enable_wsl_urls
 
 echo Baixando por HTTPS o instalador canônico para um arquivo temporário no WSL2...
-echo A seleção também foi salva em !SELECTED_MODEL_FILE!.
+echo A seleção será confirmada em !SELECTED_MODEL_FILE! somente após a instalação.
 echo.
 start "" "!SITE_URL!"
-wsl.exe -- bash -lc "set -euo pipefail; install_dir=$HOME/.visionlabel-sam/bin; mkdir -p $install_dir; final=$install_dir/visionlabel-sam-macos-linux.sh; partial=$final.part.$$; trap 'rm -f $partial' EXIT HUP INT TERM; if command -v curl >/dev/null 2>&1; then curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 --output $partial $VISIONLABEL_SITE_URL/visionlabel-sam-macos-linux.sh; else wget --https-only --tries=3 --output-document=$partial $VISIONLABEL_SITE_URL/visionlabel-sam-macos-linux.sh; fi; test -s $partial; grep -q 'sam3-concepts' $partial; chmod 700 $partial; mv -f $partial $final; trap - EXIT HUP INT TERM; VISIONLABEL_SITE_URL=$VISIONLABEL_SITE_URL bash $final !MODEL_ID!"
+wsl.exe -- bash -lc "set -euo pipefail; set -f; app_dir=$HOME/.visionlabel-sam; install_dir=$app_dir/bin; mkdir -p $install_dir; final=$install_dir/visionlabel-sam-macos-linux.sh; partial=$final.part.$$; runner=$final; wsl_selected=$app_dir/selected-model.txt; wsl_pending=$app_dir/pending-model.txt; wsl_pending_tmp=$wsl_pending.part.$$; downloaded=0; monitor_pid=0; valid_installer() { test -s $1 && grep -Fxq 'VISIONLABEL_SAM_INSTALLER_API=2' $1; }; stage_wsl_pending() { echo !MODEL_ID! >$wsl_pending_tmp; mv -f $wsl_pending_tmp $wsl_pending; }; commit_windows_selection() { local IFS=; if test -f $wsl_pending; then return 1; fi; if test -f $wsl_selected; then wsl_model=$(head -n 1 $wsl_selected | tr -d '\r\n'); else return 1; fi; if test -f $VISIONLABEL_WINDOWS_PENDING_FILE; then windows_model=$(head -n 1 $VISIONLABEL_WINDOWS_PENDING_FILE | tr -d '\r\n'); else return 1; fi; if test x$wsl_model = x!MODEL_ID! && test x$windows_model = x!MODEL_ID!; then mv -f $VISIONLABEL_WINDOWS_PENDING_FILE $VISIONLABEL_WINDOWS_SELECTED_FILE; return 0; fi; return 1; }; monitor_commit() { while true; do if commit_windows_selection; then return 0; fi; sleep 1; done; }; cleanup() { if test $monitor_pid -ne 0; then kill $monitor_pid >/dev/null 2>&1 || true; wait $monitor_pid >/dev/null 2>&1 || true; fi; rm -f $partial $wsl_pending_tmp; }; trap 'cleanup' EXIT HUP INT TERM; if command -v curl >/dev/null 2>&1 && curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 --output $partial $VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL/visionlabel-sam-macos-linux.sh; then downloaded=1; elif command -v wget >/dev/null 2>&1 && wget --https-only --tries=3 --output-document=$partial $VISIONLABEL_BOOTSTRAP_ASSET_BASE_URL/visionlabel-sam-macos-linux.sh; then downloaded=1; fi; if test $downloaded -eq 1 && valid_installer $partial; then runner=$partial; else rm -f $partial; valid_installer $final || exit 1; echo 'Download indisponível ou incompatível; usando o instalador WSL2 API 2 validado em cache.' >&2; fi; stage_wsl_pending; monitor_commit & monitor_pid=$(jobs -p); if VISIONLABEL_SITE_URL=$VISIONLABEL_SITE_URL bash $runner !MODEL_ID!; then run_status=0; else run_status=$?; fi; commit_windows_selection || true; kill $monitor_pid >/dev/null 2>&1 || true; wait $monitor_pid >/dev/null 2>&1 || true; monitor_pid=0; test $run_status -eq 0; if test $runner = $partial; then chmod 700 $partial; mv -f $partial $final; fi; trap - EXIT HUP INT TERM"
 if errorlevel 1 goto :wsl_install_error
+
+call :commit_windows_selection
+if errorlevel 1 goto :state_error
 
 echo.
 echo O instalador WSL2 foi encerrado normalmente.
@@ -343,12 +263,16 @@ echo Uso:
 echo   visionlabel-sam-windows.bat [MODELO]
 echo   visionlabel-sam-windows.bat --help
 echo.
-echo SAM 1 é instalado nativamente: sam1-vit-b, sam1-vit-l, sam1-vit-h.
 echo SAM 2.1 é instalado automaticamente na distribuição WSL2 padrão.
 echo SAM 3 também usa WSL2 e exige GPU NVIDIA disponível no WSL,
 echo Python 3.12+ e um runtime CUDA compatível com 12.6+.
 echo.
 echo O alias sam3 é aceito e normalizado para sam3-concepts.
+echo.
+echo Variáveis de ambiente opcionais:
+echo   VISIONLABEL_SITE_URL       Site HTTPS aberto no navegador e autorizado no CORS.
+echo   VISIONLABEL_ASSET_BASE_URL Origem HTTPS do conector e dos scripts canônicos.
+echo A origem padrão dos assets é !DEFAULT_ASSET_BASE_URL!.
 exit /b 0
 
 :wsl_missing
@@ -385,7 +309,8 @@ exit /b 1
 echo.
 echo A instalação de !MODEL_ID! no WSL2 falhou ou foi interrompida.
 echo Downloads incompletos do instalador foram removidos; checkpoints ficam somente no WSL2.
-echo Revise a mensagem acima, corrija o pré-requisito indicado e execute novamente.
+echo A seleção anterior foi preservada e !MODEL_ID! continua pendente para retomada.
+echo Revise a mensagem acima; o iniciador tentará retomar a instalação automaticamente.
 pause
 exit /b 1
 
@@ -394,54 +319,21 @@ echo Erro: informe no máximo um modelo. Use --help para ver os IDs.
 exit /b 1
 
 :site_error
-echo Erro: VISIONLABEL_SITE_URL deve usar HTTPS.
+echo Erro: VISIONLABEL_SITE_URL deve ser uma URL HTTPS absoluta, sem credenciais, consulta, fragmento ou espaços.
+exit /b 1
+
+:asset_base_error
+echo Erro: VISIONLABEL_ASSET_BASE_URL deve ser uma URL HTTPS absoluta, sem credenciais, consulta, fragmento ou espaços.
 exit /b 1
 
 :invalid_model
 echo Erro: modelo inválido. Use --help para ver os IDs aceitos.
 exit /b 1
 
-:python_error
-echo.
-echo Não foi possível localizar ou instalar Python 3.10+.
-echo Instale Python 3.11 em https://www.python.org/downloads/ e tente novamente.
-pause
-exit /b 1
-
-:venv_error
-echo.
-echo Não foi possível criar o ambiente isolado em !VENV_DIR!.
-pause
-exit /b 1
-
-:install_error
-echo.
-echo A instalação das dependências falhou. Verifique a conexão HTTPS e tente novamente.
-pause
-exit /b 1
-
-:connector_error
-echo.
-echo Não foi possível baixar um conector canônico compatível de !SITE_URL!.
-echo Nenhum conector parcial foi ativado.
-pause
-exit /b 1
-
-:migration_error
-echo.
-echo A instalação antiga foi preservada, mas não foi possível copiá-la para o novo layout.
-pause
-exit /b 1
-
-:download_error
-echo.
-echo O download HTTPS do checkpoint oficial falhou. O arquivo parcial não foi ativado.
-pause
-exit /b 1
-
 :state_error
 echo.
-echo Não foi possível salvar a seleção em !SELECTED_MODEL_FILE!.
+echo Não foi possível preparar ou confirmar a seleção em !SELECTED_MODEL_FILE!.
 echo Nenhum arquivo de seleção parcial foi ativado.
 pause
 exit /b 1
+

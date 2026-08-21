@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+VISIONLABEL_SAM_INSTALLER_API=2
+
 DEFAULT_SITE_URL="https://visionlabel-anotador.eduardo1089.chatgpt.site"
+DEFAULT_ASSET_BASE_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/main/public"
+DEFAULT_CONNECTOR_URL="https://raw.githubusercontent.com/eduardoafonso1089/epiaka/4603525db08be5e86fb95ea58b43d606d731f99f/public/visionlabel-sam-local.py"
+DEFAULT_CONNECTOR_SHA256="2b7a75bec318cf3c785913c00d53075710012f0944af40de68a0b9a6e4ac67dd"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SITE_URL="${VISIONLABEL_SITE_URL:-${DEFAULT_SITE_URL}}"
 SITE_URL="${SITE_URL%/}"
+ASSET_BASE_URL="${VISIONLABEL_ASSET_BASE_URL:-${DEFAULT_ASSET_BASE_URL}}"
+ASSET_BASE_URL="${ASSET_BASE_URL%/}"
 APP_DIR="${HOME}/.visionlabel-sam"
 VENVS_DIR="${APP_DIR}/venvs"
 MODELS_DIR="${APP_DIR}/models"
 CONNECTOR="${APP_DIR}/visionlabel-sam-local.py"
 SELECTED_MODEL_FILE="${APP_DIR}/selected-model.txt"
+PENDING_MODEL_FILE="${APP_DIR}/pending-model.txt"
 PORT="7860"
+STARTUP_TIMEOUT="${VISIONLABEL_STARTUP_TIMEOUT:-1800}"
 
-SAM1_REVISION="dca509fe793f601edb92606367a655c15ac00fdf"
 SAM2_REVISION="2b90b9f5ceec907a1c18123530e92e794ad901a4"
 SAM3_REVISION="8f0b7f4d4e7eda2ed606ebde6702c93359ad01da"
 
@@ -24,9 +33,6 @@ Uso:
   bash visionlabel-sam-macos-linux.sh --help
 
 Modelos aceitos:
-  sam1-vit-b
-  sam1-vit-l
-  sam1-vit-h
   sam2.1-hiera-tiny
   sam2.1-hiera-small
   sam2.1-hiera-base-plus
@@ -36,8 +42,11 @@ Modelos aceitos:
 Sem MODELO, o instalador abre um menu. SAM 3 exige Linux, GPU NVIDIA,
 Python 3.12+ e acesso aprovado ao checkpoint gated da Meta no Hugging Face.
 
-Variável opcional:
-  VISIONLABEL_SITE_URL   URL HTTPS do VisionLabel que fornece o conector
+Variáveis opcionais:
+  VISIONLABEL_SITE_URL        URL HTTPS aberta no navegador e aceita no CORS
+  VISIONLABEL_ASSET_BASE_URL  origem HTTPS pública dos arquivos do instalador
+  VISIONLABEL_CONNECTOR_PATH  conector local explícito para desenvolvimento/offline
+  VISIONLABEL_STARTUP_TIMEOUT segundos máximos para o primeiro carregamento (padrão: 1800)
 EOF
 }
 
@@ -47,11 +56,12 @@ fail() {
 }
 
 normalize_model() {
-  case "$1" in
-    sam1-vit-b|sam1-vit-l|sam1-vit-h|\
+  local normalized
+  normalized="$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]')"
+  case "$normalized" in
     sam2.1-hiera-tiny|sam2.1-hiera-small|sam2.1-hiera-base-plus|sam2.1-hiera-large|\
     sam3-concepts)
-      printf '%s\n' "$1"
+      printf '%s\n' "$normalized"
       ;;
     sam3)
       printf '%s\n' "sam3-concepts"
@@ -65,25 +75,19 @@ normalize_model() {
 choose_model() {
   local choice
   printf '\nEscolha o modelo que deseja instalar e usar:\n\n' >&2
-  printf '  1) SAM 1 ViT-B             (~375 MB; imagem)\n' >&2
-  printf '  2) SAM 1 ViT-L             (~1,25 GB; imagem)\n' >&2
-  printf '  3) SAM 1 ViT-H             (~2,56 GB; imagem)\n' >&2
-  printf '  4) SAM 2.1 Hiera Tiny      (~156 MB; imagem/vídeo)\n' >&2
-  printf '  5) SAM 2.1 Hiera Small     (~184 MB; recomendado)\n' >&2
-  printf '  6) SAM 2.1 Hiera Base+     (~324 MB; imagem/vídeo)\n' >&2
-  printf '  7) SAM 2.1 Hiera Large     (~898 MB; imagem/vídeo)\n' >&2
-  printf '  8) SAM 3 Concepts          (~3,45 GB; Linux + NVIDIA)\n\n' >&2
-  printf 'Digite 1–8 ou o ID completo: ' >&2
+  printf '  1) SAM 2.1 Hiera Tiny      (~156 MB; imagem/vídeo)\n' >&2
+  printf '  2) SAM 2.1 Hiera Small     (~184 MB; recomendado)\n' >&2
+  printf '  3) SAM 2.1 Hiera Base+     (~324 MB; imagem/vídeo)\n' >&2
+  printf '  4) SAM 2.1 Hiera Large     (~898 MB; imagem/vídeo)\n' >&2
+  printf '  5) SAM 3 Concepts          (~3,45 GB; Linux + NVIDIA)\n\n' >&2
+  printf 'Digite 1–5 ou o ID completo: ' >&2
   IFS= read -r choice || fail "não foi possível ler a escolha. Informe o ID como primeiro argumento."
   case "$choice" in
-    1) printf '%s\n' "sam1-vit-b" ;;
-    2) printf '%s\n' "sam1-vit-l" ;;
-    3) printf '%s\n' "sam1-vit-h" ;;
-    4) printf '%s\n' "sam2.1-hiera-tiny" ;;
-    5) printf '%s\n' "sam2.1-hiera-small" ;;
-    6) printf '%s\n' "sam2.1-hiera-base-plus" ;;
-    7) printf '%s\n' "sam2.1-hiera-large" ;;
-    8) printf '%s\n' "sam3-concepts" ;;
+    1) printf '%s\n' "sam2.1-hiera-tiny" ;;
+    2) printf '%s\n' "sam2.1-hiera-small" ;;
+    3) printf '%s\n' "sam2.1-hiera-base-plus" ;;
+    4) printf '%s\n' "sam2.1-hiera-large" ;;
+    5) printf '%s\n' "sam3-concepts" ;;
     *) normalize_model "$choice" || fail "modelo inválido: ${choice}" ;;
   esac
 }
@@ -110,10 +114,16 @@ find_python() {
 }
 
 require_https() {
-  case "$1" in
-    https://*) ;;
-    *) fail "download recusado porque a URL não usa HTTPS: $1" ;;
-  esac
+  local url="$1"
+  local remainder
+  local authority
+  [[ "$url" == https://* ]] || fail "download recusado porque a URL não usa HTTPS: $url"
+  [[ "$url" != *'?'* && "$url" != *'#'* && ! "$url" =~ [[:space:]] ]] ||
+    fail "URL HTTPS inválida; consultas, fragmentos e espaços não são aceitos: $url"
+  remainder="${url#https://}"
+  authority="${remainder%%/*}"
+  [[ -n "$authority" && "$authority" != *'@'* ]] ||
+    fail "URL HTTPS inválida; host ausente ou credenciais embutidas: $url"
 }
 
 download_to_file() {
@@ -122,35 +132,150 @@ download_to_file() {
   require_https "$url"
   mkdir -p "$(dirname "$destination")"
   if command -v curl >/dev/null 2>&1; then
-    curl --fail --location --retry 3 --retry-delay 2 --progress-bar "$url" --output "$destination"
+    curl --fail --location --proto '=https' --proto-redir '=https' --retry 3 --retry-delay 2 --progress-bar "$url" --output "$destination" || return 1
   elif command -v wget >/dev/null 2>&1; then
-    wget --https-only --tries=3 --show-progress "$url" --output-document="$destination"
+    wget --https-only --tries=3 --show-progress "$url" --output-document="$destination" || return 1
   else
     fail "instale curl ou wget para continuar."
   fi
-  [[ -s "$destination" ]] || fail "o download retornou um arquivo vazio: $url"
+  [[ -s "$destination" ]]
 }
 
 download_atomic() {
   local url="$1"
   local destination="$2"
+  local expected_size="${3:-0}"
   local partial="${destination}.part"
-  download_to_file "$url" "$partial"
+  rm -f "$partial"
+  if ! download_to_file "$url" "$partial"; then
+    rm -f "$partial"
+    fail "não foi possível baixar o arquivo esperado de ${url}."
+  fi
+  if ! file_has_size "$partial" "$expected_size"; then
+    local actual_size
+    actual_size="$(file_size "$partial")"
+    rm -f "$partial"
+    fail "o download de ${url} ficou incompleto (${actual_size} bytes; esperado: ${expected_size})."
+  fi
   mv -f "$partial" "$destination"
 }
 
+file_size() {
+  local path="$1"
+  [[ -f "$path" ]] || {
+    printf '0\n'
+    return 0
+  }
+  LC_ALL=C wc -c <"$path" | tr -d '[:space:]'
+}
+
+file_has_size() {
+  local path="$1"
+  local expected_size="$2"
+  local actual_size
+  [[ -f "$path" && "$expected_size" =~ ^[1-9][0-9]*$ ]] || return 1
+  actual_size="$(file_size "$path")"
+  [[ "$actual_size" == "$expected_size" ]]
+}
+
+file_sha256() {
+  local path="$1"
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "$path" | awk '{print $1}'
+  elif command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "$path" | awk '{print $1}'
+  else
+    return 1
+  fi
+}
+
+connector_is_compatible() {
+  local path="$1"
+  [[ -f "$path" && -s "$path" ]] &&
+    grep -Fqx 'API_VERSION = 2' "$path" &&
+    grep -Fq -- '"--model"' "$path"
+}
+
 download_connector() {
-  local url="${SITE_URL}/visionlabel-sam-local.py"
+  local url
+  local expected_sha256=""
   local partial="${CONNECTOR}.part"
-  require_https "$SITE_URL"
-  printf 'Baixando o conector canônico do VisionLabel...\n'
-  download_to_file "$url" "$partial"
-  if ! grep -q -- '"--model"' "$partial"; then
+  local adjacent_connector="${SCRIPT_DIR}/visionlabel-sam-local.py"
+  mkdir -p "$(dirname "$partial")"
+  rm -f "$partial"
+  if [[ -n "${VISIONLABEL_CONNECTOR_PATH:-}" ]]; then
+    [[ -f "$VISIONLABEL_CONNECTOR_PATH" && -s "$VISIONLABEL_CONNECTOR_PATH" ]] ||
+      fail "VISIONLABEL_CONNECTOR_PATH não aponta para um arquivo de conector válido."
+    printf 'Instalando o conector local informado em VISIONLABEL_CONNECTOR_PATH...\n'
+    if ! cp "$VISIONLABEL_CONNECTOR_PATH" "$partial"; then
+      rm -f "$partial"
+      fail "não foi possível copiar o conector local para ${partial}."
+    fi
+  elif [[ -f "$adjacent_connector" && -s "$adjacent_connector" ]]; then
+    printf 'Instalando o conector distribuído junto do instalador...\n'
+    expected_sha256="$DEFAULT_CONNECTOR_SHA256"
+    if ! cp "$adjacent_connector" "$partial"; then
+      rm -f "$partial"
+      fail "não foi possível copiar o conector distribuído para ${partial}."
+    fi
+  else
+    if [[ -n "${VISIONLABEL_ASSET_BASE_URL:-}" ]]; then
+      url="${ASSET_BASE_URL}/visionlabel-sam-local.py"
+    else
+      url="$DEFAULT_CONNECTOR_URL"
+      expected_sha256="$DEFAULT_CONNECTOR_SHA256"
+    fi
+    require_https "$url"
+    printf 'Baixando o conector canônico do VisionLabel da origem pública...\n'
+    if ! download_to_file "$url" "$partial"; then
+      rm -f "$partial"
+      if connector_is_compatible "$CONNECTOR"; then
+        printf 'A origem pública não respondeu; reutilizando o conector local compatível.\n'
+        return 0
+      fi
+      fail "não foi possível baixar o conector de ${url}."
+    fi
+  fi
+  if ! connector_is_compatible "$partial"; then
     rm -f "$partial"
-    fail "o Site forneceu um conector incompatível, sem a opção --model. Tente novamente após atualizar o VisionLabel."
+    if [[ -z "${VISIONLABEL_CONNECTOR_PATH:-}" && ! -s "$adjacent_connector" ]] &&
+      connector_is_compatible "$CONNECTOR"; then
+      printf 'A origem pública forneceu uma versão incompatível; reutilizando o conector local compatível.\n'
+      return 0
+    fi
+    fail "a origem forneceu um conector incompatível com a API 2 e a opção --model. Tente novamente após atualizar o VisionLabel."
+  fi
+  if [[ -n "$expected_sha256" ]]; then
+    local actual_sha256
+    actual_sha256="$(file_sha256 "$partial")" || {
+      rm -f "$partial"
+      fail "sha256sum ou shasum é necessário para validar o conector versionado."
+    }
+    if [[ "$actual_sha256" != "$expected_sha256" ]]; then
+      rm -f "$partial"
+      fail "a soma SHA-256 do conector versionado não corresponde ao artefato publicado."
+    fi
   fi
   chmod 600 "$partial"
   mv -f "$partial" "$CONNECTOR"
+}
+
+cache_current_installer() {
+  local source_installer="${SCRIPT_DIR}/$(basename "${BASH_SOURCE[0]}")"
+  local cached_installer="${APP_DIR}/bin/visionlabel-sam-macos-linux.sh"
+  local partial="${cached_installer}.part"
+  [[ -f "$source_installer" && -s "$source_installer" ]] ||
+    fail "não foi possível localizar o próprio instalador para habilitar a retomada automática."
+  grep -Fqx 'VISIONLABEL_SAM_INSTALLER_API=2' "$source_installer" ||
+    fail "o instalador atual não possui o marcador de compatibilidade esperado."
+  mkdir -p "$(dirname "$cached_installer")"
+  rm -f "$partial"
+  if ! cp "$source_installer" "$partial"; then
+    rm -f "$partial"
+    fail "não foi possível guardar o instalador para retomada automática."
+  fi
+  chmod 700 "$partial"
+  mv -f "$partial" "$cached_installer"
 }
 
 open_site() {
@@ -161,58 +286,100 @@ open_site() {
   fi
 }
 
-server_is_running() {
-  command -v curl >/dev/null 2>&1 &&
-    curl --fail --silent --max-time 2 "http://127.0.0.1:${PORT}/health" >/dev/null 2>&1
+server_state() {
+  "$PYTHON" - "$MODEL_ID" "$PORT" <<'PY' 2>/dev/null
+import json
+import sys
+import urllib.request
+
+expected_model, port = sys.argv[1:]
+try:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(f"http://127.0.0.1:{port}/health", timeout=2) as response:
+        payload = json.load(response)
+except Exception:
+    print("offline")
+    raise SystemExit(0)
+if payload.get("service") != "VisionLabel SAM local" or payload.get("api_version") != 2:
+    print("mismatch")
+elif payload.get("model_id") != expected_model:
+    print("mismatch")
+elif payload.get("status") in {"loading", "ready", "error"}:
+    print(payload["status"])
+else:
+    print("unhealthy")
+PY
+}
+
+server_error_message() {
+  "$PYTHON" - "$PORT" <<'PY' 2>/dev/null || true
+import json
+import sys
+import urllib.request
+
+try:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(f"http://127.0.0.1:{sys.argv[1]}/health", timeout=2) as response:
+        payload = json.load(response)
+except Exception:
+    raise SystemExit(0)
+message = str(payload.get("error") or "erro não detalhado").replace("\n", " ")
+print(message[:500])
+PY
+}
+
+local_port_is_in_use() {
+  "$PYTHON" - "$PORT" <<'PY' >/dev/null 2>&1
+import socket
+import sys
+
+sock = socket.socket()
+sock.settimeout(1)
+try:
+    result = sock.connect_ex(("127.0.0.1", int(sys.argv[1])))
+finally:
+    sock.close()
+raise SystemExit(0 if result == 0 else 1)
+PY
 }
 
 set_model_metadata() {
   MODEL_ID="$1"
   MODEL_CONFIG=""
   case "$MODEL_ID" in
-    sam1-vit-b)
-      FAMILY="sam1"
-      CHECKPOINT_NAME="sam_vit_b_01ec64.pth"
-      CHECKPOINT_URL="https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth"
-      ;;
-    sam1-vit-l)
-      FAMILY="sam1"
-      CHECKPOINT_NAME="sam_vit_l_0b3195.pth"
-      CHECKPOINT_URL="https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth"
-      ;;
-    sam1-vit-h)
-      FAMILY="sam1"
-      CHECKPOINT_NAME="sam_vit_h_4b8939.pth"
-      CHECKPOINT_URL="https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth"
-      ;;
     sam2.1-hiera-tiny)
       FAMILY="sam2"
       CHECKPOINT_NAME="sam2.1_hiera_tiny.pt"
       CHECKPOINT_URL="https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_tiny.pt"
+      CHECKPOINT_SIZE=156008466
       MODEL_CONFIG="configs/sam2.1/sam2.1_hiera_t.yaml"
       ;;
     sam2.1-hiera-small)
       FAMILY="sam2"
       CHECKPOINT_NAME="sam2.1_hiera_small.pt"
       CHECKPOINT_URL="https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_small.pt"
+      CHECKPOINT_SIZE=184416285
       MODEL_CONFIG="configs/sam2.1/sam2.1_hiera_s.yaml"
       ;;
     sam2.1-hiera-base-plus)
       FAMILY="sam2"
       CHECKPOINT_NAME="sam2.1_hiera_base_plus.pt"
       CHECKPOINT_URL="https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_base_plus.pt"
+      CHECKPOINT_SIZE=323606802
       MODEL_CONFIG="configs/sam2.1/sam2.1_hiera_b+.yaml"
       ;;
     sam2.1-hiera-large)
       FAMILY="sam2"
       CHECKPOINT_NAME="sam2.1_hiera_large.pt"
       CHECKPOINT_URL="https://dl.fbaipublicfiles.com/segment_anything_2/092824/sam2.1_hiera_large.pt"
+      CHECKPOINT_SIZE=898083611
       MODEL_CONFIG="configs/sam2.1/sam2.1_hiera_l.yaml"
       ;;
     sam3-concepts)
       FAMILY="sam3"
       CHECKPOINT_NAME="sam3.pt"
       CHECKPOINT_URL=""
+      CHECKPOINT_SIZE=3450062241
       ;;
     *)
       fail "modelo inválido: ${MODEL_ID}"
@@ -232,7 +399,7 @@ check_platform() {
 
   if [[ "$MODEL_ID" == "sam3-concepts" ]]; then
     if [[ "$OS_NAME" == "Darwin" ]]; then
-      fail "SAM 3 não é oferecido no macOS: o upstream exige Linux, GPU NVIDIA e CUDA 12.6+. Escolha SAM 1 ou SAM 2.1."
+      fail "SAM 3 não é oferecido no macOS: o upstream exige Linux, GPU NVIDIA e CUDA 12.6+. Escolha um modelo SAM 2.1."
     fi
     command -v nvidia-smi >/dev/null 2>&1 ||
       fail "SAM 3 exige uma GPU NVIDIA disponível no Linux; nvidia-smi não foi encontrado."
@@ -243,12 +410,20 @@ check_platform() {
 
 prepare_venv() {
   local minimum_minor
+  local incompatible_backup
   case "$FAMILY" in
-    sam1) minimum_minor=10 ;;
     sam2) minimum_minor=10 ;;
     sam3) minimum_minor=12 ;;
     *) fail "família de runtime inválida: ${FAMILY}" ;;
   esac
+
+  if [[ -x "$PYTHON" ]] &&
+    ! "$PYTHON" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, ${minimum_minor}) else 1)" >/dev/null 2>&1; then
+    incompatible_backup="${VENV_DIR}.incompatible-$(date +%Y%m%d%H%M%S)-$$"
+    printf 'Preservando o ambiente Python incompatível em %s e recriando o runtime...\n' "$incompatible_backup"
+    mv "$VENV_DIR" "$incompatible_backup" ||
+      fail "não foi possível preservar o ambiente Python incompatível."
+  fi
 
   if [[ ! -x "$PYTHON" ]]; then
     local system_python
@@ -261,35 +436,41 @@ prepare_venv() {
   fi
 
   "$PYTHON" -c "import sys; raise SystemExit(0 if sys.version_info >= (3, ${minimum_minor}) else 1)" >/dev/null 2>&1 ||
-    fail "o ambiente ${VENV_DIR} usa um Python antigo. Preserve-o e remova-o manualmente se desejar recriá-lo com Python 3.${minimum_minor}+."
+    fail "o ambiente ${VENV_DIR} não pôde ser criado com Python 3.${minimum_minor}+."
 }
 
 install_runtime() {
   local ready_file
   case "$FAMILY" in
-    sam1) ready_file="${VENV_DIR}/.visionlabel-sam1-${SAM1_REVISION}.ok" ;;
     sam2) ready_file="${VENV_DIR}/.visionlabel-sam2-${SAM2_REVISION}.ok" ;;
     sam3) ready_file="${VENV_DIR}/.visionlabel-sam3-${SAM3_REVISION}.ok" ;;
   esac
 
+  if [[ "$FAMILY" == "sam3" && -f "$ready_file" ]] &&
+    { [[ ! -x "${VENV_DIR}/bin/hf" ]] ||
+      ! "$PYTHON" -c 'import einops, huggingface_hub, pkg_resources, psutil, pycocotools' >/dev/null 2>&1; }; then
+    printf 'Completando dependências de runtime omitidas pelo pacote oficial do SAM 3...\n'
+    "$PYTHON" -m pip install --upgrade "setuptools<81" einops huggingface_hub psutil pycocotools
+  fi
+
   if [[ -f "$ready_file" ]]; then
     if "$PYTHON" -c 'import cv2, fastapi, torch, uvicorn' >/dev/null 2>&1; then
       case "$FAMILY" in
-        sam1) "$PYTHON" -c 'import segment_anything' >/dev/null 2>&1 && return 0 ;;
-        sam2) "$PYTHON" -c 'import sam2' >/dev/null 2>&1 && return 0 ;;
-        sam3) "$PYTHON" -c 'import sam3, huggingface_hub' >/dev/null 2>&1 && return 0 ;;
+        sam2) "$PYTHON" -c 'from sam2.build_sam import build_sam2; from sam2.sam2_image_predictor import SAM2ImagePredictor' >/dev/null 2>&1 && return 0 ;;
+        sam3) "$PYTHON" -c 'from sam3.model.sam3_image_processor import Sam3Processor; from sam3.model_builder import build_sam3_image_model' >/dev/null 2>&1 && return 0 ;;
       esac
     fi
   fi
 
   printf 'Instalando dependências oficiais da família %s. Isso pode demorar...\n' "$FAMILY"
-  "$PYTHON" -m pip install --upgrade pip setuptools wheel
+  "$PYTHON" -m pip install --upgrade pip wheel
+  if [[ "$FAMILY" == "sam3" ]]; then
+    # O SAM 3 fixado acima ainda importa pkg_resources, removido no setuptools 81+.
+    "$PYTHON" -m pip install --upgrade "setuptools<81"
+  else
+    "$PYTHON" -m pip install --upgrade setuptools
+  fi
   case "$FAMILY" in
-    sam1)
-      "$PYTHON" -m pip install torch torchvision
-      "$PYTHON" -m pip install "https://github.com/facebookresearch/segment-anything/archive/${SAM1_REVISION}.zip"
-      "$PYTHON" -m pip install fastapi uvicorn pillow opencv-python-headless numpy
-      ;;
     sam2)
       "$PYTHON" -m pip install "torch>=2.5.1" "torchvision>=0.20.1"
       SAM2_BUILD_CUDA=0 "$PYTHON" -m pip install "https://github.com/facebookresearch/sam2/archive/${SAM2_REVISION}.zip"
@@ -298,9 +479,16 @@ install_runtime() {
     sam3)
       "$PYTHON" -m pip install torch==2.10.0 torchvision --index-url https://download.pytorch.org/whl/cu128
       "$PYTHON" -m pip install "https://github.com/facebookresearch/sam3/archive/${SAM3_REVISION}.zip"
-      "$PYTHON" -m pip install fastapi uvicorn pillow "opencv-python-headless<4.12" "numpy<2"
+      # A revisão oficial usa estes pacotes no import principal, mas os declara
+      # somente como extras (ou não os declara) no pyproject.
+      "$PYTHON" -m pip install fastapi uvicorn pillow einops huggingface_hub psutil pycocotools "opencv-python-headless<4.12" "numpy<2"
       ;;
   esac
+  printf 'Verificando imports do runtime %s...\n' "$FAMILY"
+  case "$FAMILY" in
+    sam2) "$PYTHON" -c 'import cv2, fastapi, torch, uvicorn; from sam2.build_sam import build_sam2; from sam2.sam2_image_predictor import SAM2ImagePredictor' ;;
+    sam3) "$PYTHON" -c 'import cv2, fastapi, huggingface_hub, pkg_resources, torch, uvicorn; from sam3.model.sam3_image_processor import Sam3Processor; from sam3.model_builder import build_sam3_image_model' ;;
+  esac || fail "as dependências da família ${FAMILY} foram instaladas, mas o teste de importação acima falhou."
   touch "$ready_file"
 }
 
@@ -311,19 +499,8 @@ verify_runtime_device() {
   fi
 }
 
-migrate_legacy_vit_b() {
-  local legacy_checkpoint="${APP_DIR}/sam_vit_b_01ec64.pth"
-  if [[ "$MODEL_ID" != "sam1-vit-b" || -f "$CHECKPOINT" || ! -f "$legacy_checkpoint" ]]; then
-    return 0
-  fi
-  printf 'Instalação ViT-B antiga encontrada; preservando o original e registrando uma cópia no novo layout...\n'
-  mkdir -p "$(dirname "$CHECKPOINT")"
-  if ln "$legacy_checkpoint" "${CHECKPOINT}.part" 2>/dev/null; then
-    mv -f "${CHECKPOINT}.part" "$CHECKPOINT"
-  else
-    cp "$legacy_checkpoint" "${CHECKPOINT}.part"
-    mv -f "${CHECKPOINT}.part" "$CHECKPOINT"
-  fi
+checkpoint_is_valid() {
+  file_has_size "$CHECKPOINT" "$CHECKPOINT_SIZE"
 }
 
 download_sam3_checkpoint() {
@@ -338,32 +515,79 @@ download_sam3_checkpoint() {
     "$hf_cli" auth login || fail "autenticação no Hugging Face não concluída."
   fi
   mkdir -p "$(dirname "$CHECKPOINT")" "$staging_dir"
+  rm -f "$staged_checkpoint" "${CHECKPOINT}.part"
   if ! "$hf_cli" download facebook/sam3 "$CHECKPOINT_NAME" --local-dir "$staging_dir"; then
     fail "não foi possível baixar o checkpoint gated. Confirme a aprovação de acesso à conta no Hugging Face."
   fi
-  [[ -s "$staged_checkpoint" ]] || fail "o Hugging Face não retornou o checkpoint esperado: ${CHECKPOINT_NAME}"
+  if ! file_has_size "$staged_checkpoint" "$CHECKPOINT_SIZE"; then
+    local actual_size
+    actual_size="$(file_size "$staged_checkpoint")"
+    rm -f "$staged_checkpoint"
+    fail "o checkpoint retornado pelo Hugging Face ficou incompleto (${actual_size} bytes; esperado: ${CHECKPOINT_SIZE})."
+  fi
   mv -f "$staged_checkpoint" "${CHECKPOINT}.part"
   mv -f "${CHECKPOINT}.part" "$CHECKPOINT"
 }
 
 ensure_checkpoint() {
-  migrate_legacy_vit_b
-  [[ -f "$CHECKPOINT" ]] && return 0
+  if checkpoint_is_valid; then
+    return 0
+  fi
+  if [[ -f "$CHECKPOINT" ]]; then
+    printf 'O checkpoint existente está incompleto ou não corresponde ao arquivo oficial; baixando uma cópia íntegra.\n'
+  fi
   printf 'Baixando checkpoint oficial %s...\n' "$CHECKPOINT_NAME"
   if [[ "$FAMILY" == "sam3" ]]; then
     download_sam3_checkpoint
   else
-    download_atomic "$CHECKPOINT_URL" "$CHECKPOINT"
+    download_atomic "$CHECKPOINT_URL" "$CHECKPOINT" "$CHECKPOINT_SIZE"
   fi
+  checkpoint_is_valid || fail "o checkpoint instalado não passou na validação final de tamanho."
+}
+
+save_pending_selection() {
+  local partial="${PENDING_MODEL_FILE}.part"
+  printf '%s\n' "$MODEL_ID" >"$partial"
+  mv -f "$partial" "$PENDING_MODEL_FILE"
 }
 
 save_selection() {
   local partial="${SELECTED_MODEL_FILE}.part"
   printf '%s\n' "$MODEL_ID" >"$partial"
   mv -f "$partial" "$SELECTED_MODEL_FILE"
+  rm -f "$PENDING_MODEL_FILE"
 }
 
-run_connector() {
+complete_installation() {
+  save_selection
+  printf '\nModelo %s instalado, carregado e selecionado.\n' "$MODEL_ID"
+  printf 'A seleção foi salva em %s.\n' "$SELECTED_MODEL_FILE"
+  open_site
+}
+
+wait_for_existing_model() {
+  local deadline=$((SECONDS + STARTUP_TIMEOUT))
+  local state
+  printf 'O conector já está carregando %s; aguardando o modelo ficar pronto...\n' "$MODEL_ID"
+  while (( SECONDS < deadline )); do
+    state="$(server_state)"
+    case "$state" in
+      ready)
+        complete_installation
+        return 0
+        ;;
+      loading) sleep 2 ;;
+      error)
+        fail "o conector falhou ao carregar ${MODEL_ID}: $(server_error_message)"
+        ;;
+      *) fail "o conector que estava carregando ${MODEL_ID} deixou de responder corretamente."
+        ;;
+    esac
+  done
+  fail "o carregamento de ${MODEL_ID} excedeu ${STARTUP_TIMEOUT} segundos."
+}
+
+run_connector_transactionally() {
   local args=(
     "$CONNECTOR"
     --model "$MODEL_ID"
@@ -373,8 +597,70 @@ run_connector() {
     args+=(--model-config "$MODEL_CONFIG")
   fi
   args+=(--device auto --port "$PORT")
-  VISIONLABEL_ALLOWED_ORIGINS="${SITE_URL},http://localhost:5173,http://127.0.0.1:5173" \
-    "$PYTHON" "${args[@]}"
+  printf 'Iniciando o conector e aguardando %s ficar pronto...\n' "$MODEL_ID"
+  VISIONLABEL_ALLOWED_ORIGINS="${SITE_ORIGIN},http://localhost:5173,http://127.0.0.1:5173" \
+    "$PYTHON" "${args[@]}" &
+  CONNECTOR_PID=$!
+
+  cleanup_connector() {
+    if kill -0 "$CONNECTOR_PID" >/dev/null 2>&1; then
+      kill -TERM "$CONNECTOR_PID" >/dev/null 2>&1 || true
+      wait "$CONNECTOR_PID" >/dev/null 2>&1 || true
+    fi
+  }
+  interrupt_connector() {
+    cleanup_connector
+    exit 130
+  }
+  trap cleanup_connector EXIT
+  trap interrupt_connector HUP INT TERM
+
+  local deadline=$((SECONDS + STARTUP_TIMEOUT))
+  local state
+  local connector_status
+  while (( SECONDS < deadline )); do
+    state="$(server_state)"
+    case "$state" in
+      ready)
+        complete_installation
+        printf 'Mantenha este terminal aberto enquanto usar o SAM.\n\n'
+        if wait "$CONNECTOR_PID"; then
+          connector_status=0
+        else
+          connector_status=$?
+        fi
+        trap - EXIT HUP INT TERM
+        return "$connector_status"
+        ;;
+      error)
+        local error_message
+        error_message="$(server_error_message)"
+        cleanup_connector
+        trap - EXIT HUP INT TERM
+        fail "o modelo ${MODEL_ID} não conseguiu carregar: ${error_message}"
+        ;;
+      mismatch|unhealthy)
+        cleanup_connector
+        trap - EXIT HUP INT TERM
+        fail "a porta ${PORT} respondeu com um serviço ou modelo diferente durante a inicialização."
+        ;;
+      loading|offline) ;;
+    esac
+    if ! kill -0 "$CONNECTOR_PID" >/dev/null 2>&1; then
+      if wait "$CONNECTOR_PID"; then
+        connector_status=0
+      else
+        connector_status=$?
+      fi
+      trap - EXIT HUP INT TERM
+      fail "o conector terminou antes de ${MODEL_ID} ficar pronto (código ${connector_status})."
+    fi
+    sleep 2
+  done
+
+  cleanup_connector
+  trap - EXIT HUP INT TERM
+  fail "o carregamento de ${MODEL_ID} excedeu ${STARTUP_TIMEOUT} segundos."
 }
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
@@ -386,10 +672,19 @@ if (( $# > 1 )); then
   fail "informe no máximo um modelo."
 fi
 
-case "$SITE_URL" in
-  https://*) ;;
-  *) fail "VISIONLABEL_SITE_URL deve usar HTTPS." ;;
-esac
+[[ "$STARTUP_TIMEOUT" =~ ^[1-9][0-9]*$ ]] ||
+  fail "VISIONLABEL_STARTUP_TIMEOUT deve ser um número inteiro positivo de segundos."
+
+require_https "$SITE_URL"
+site_authority="${SITE_URL#https://}"
+site_authority="${site_authority%%/*}"
+if [[ "$site_authority" == *:443 ]]; then
+  site_authority="${site_authority%:443}"
+fi
+SITE_ORIGIN="https://${site_authority}"
+if [[ -z "${VISIONLABEL_CONNECTOR_PATH:-}" ]]; then
+  require_https "$ASSET_BASE_URL"
+fi
 
 if [[ $# -eq 1 ]]; then
   MODEL_ID="$(normalize_model "$1")" || {
@@ -408,22 +703,31 @@ printf ' VisionLabel SAM local — %s\n' "$MODEL_ID"
 printf '==========================================\n\n'
 
 mkdir -p "$APP_DIR" "$VENVS_DIR" "$MODELS_DIR"
+cache_current_installer
+save_pending_selection
+download_connector
 prepare_venv
 install_runtime
 verify_runtime_device
-download_connector
 ensure_checkpoint
-save_selection
 
-printf '\nModelo %s instalado e selecionado.\n' "$MODEL_ID"
-printf 'A seleção foi salva em %s.\n' "$SELECTED_MODEL_FILE"
-open_site
-
-if server_is_running; then
-  printf '\nJá existe um conector em execução na porta %s.\n' "$PORT"
-  printf 'Feche a janela antiga e execute o iniciador novamente para carregar %s.\n' "$MODEL_ID"
-  exit 0
+case "$(server_state)" in
+  ready)
+    complete_installation
+    printf '\nO modelo %s já está carregado pelo conector na porta %s.\n' "$MODEL_ID" "$PORT"
+    exit 0
+    ;;
+  loading)
+    wait_for_existing_model
+    exit 0
+    ;;
+  error|mismatch|unhealthy)
+    fail "a porta ${PORT} já está ocupada por um conector com erro, outro modelo ou outro serviço. Feche-o e execute novamente."
+    ;;
+  offline) ;;
+esac
+if local_port_is_in_use; then
+  fail "a porta ${PORT} já está ocupada por outro processo. Feche-o e execute novamente."
 fi
 
-printf 'Mantenha este terminal aberto enquanto usar o SAM.\n\n'
-run_connector
+run_connector_transactionally

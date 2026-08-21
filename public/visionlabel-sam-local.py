@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Conector local multi-engine do SAM para o VisionLabel.
+"""Conector local multi-engine do SAM para o VisionLabel (SAM 2.1 e SAM 3).
 
 O conector nunca baixa modelos nem instala pacotes. Forneça um checkpoint local
 obtido da fonte oficial do modelo escolhido.
 
 Exemplos:
-  python visionlabel-sam-local.py --checkpoint sam_vit_b_01ec64.pth
   python visionlabel-sam-local.py --model sam2.1-hiera-small \
     --checkpoint sam2.1_hiera_small.pt
   python visionlabel-sam-local.py --model sam3-concepts --checkpoint sam3.pt --device cuda
@@ -40,7 +39,7 @@ import uvicorn
 from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 
@@ -129,19 +128,18 @@ class ModelSpec:
     model_id: str
     family: str
     model_type: str
+    checkpoint_name: str
     capabilities: tuple[str, ...]
     default_config: str | None = None
 
 
 COMMON_CAPABILITIES = ("point", "negative_point", "box", "multimask")
 MODEL_SPECS = {
-    "sam1-vit-b": ModelSpec("sam1-vit-b", "sam1", "vit_b", COMMON_CAPABILITIES),
-    "sam1-vit-l": ModelSpec("sam1-vit-l", "sam1", "vit_l", COMMON_CAPABILITIES),
-    "sam1-vit-h": ModelSpec("sam1-vit-h", "sam1", "vit_h", COMMON_CAPABILITIES),
     "sam2.1-hiera-tiny": ModelSpec(
         "sam2.1-hiera-tiny",
         "sam2",
         "hiera_tiny",
+        "sam2.1_hiera_tiny.pt",
         COMMON_CAPABILITIES,
         "configs/sam2.1/sam2.1_hiera_t.yaml",
     ),
@@ -149,6 +147,7 @@ MODEL_SPECS = {
         "sam2.1-hiera-small",
         "sam2",
         "hiera_small",
+        "sam2.1_hiera_small.pt",
         COMMON_CAPABILITIES,
         "configs/sam2.1/sam2.1_hiera_s.yaml",
     ),
@@ -156,6 +155,7 @@ MODEL_SPECS = {
         "sam2.1-hiera-base-plus",
         "sam2",
         "hiera_base_plus",
+        "sam2.1_hiera_base_plus.pt",
         COMMON_CAPABILITIES,
         "configs/sam2.1/sam2.1_hiera_b+.yaml",
     ),
@@ -163,6 +163,7 @@ MODEL_SPECS = {
         "sam2.1-hiera-large",
         "sam2",
         "hiera_large",
+        "sam2.1_hiera_large.pt",
         COMMON_CAPABILITIES,
         "configs/sam2.1/sam2.1_hiera_l.yaml",
     ),
@@ -170,6 +171,7 @@ MODEL_SPECS = {
         "sam3-concepts",
         "sam3",
         "sam3",
+        "sam3.pt",
         (*COMMON_CAPABILITIES, "text", "box_exemplar"),
     ),
 }
@@ -298,47 +300,6 @@ def _predictions_from_arrays(
             bbox = [float(coordinate) for coordinate in box_array[index]]
         predictions.append(RawPrediction(_binary_mask(mask), score, bbox))
     return predictions
-
-
-class Sam1Adapter:
-    def __init__(self, spec: ModelSpec, checkpoint: Path, device: str):
-        import torch
-        from segment_anything import SamPredictor, sam_model_registry
-
-        model = sam_model_registry[spec.model_type](checkpoint=str(checkpoint))
-        model.to(device=device)
-        model.eval()
-        self.spec = spec
-        self.device = device
-        self._torch = torch
-        self._predictor = SamPredictor(model)
-
-    def set_image(self, image: np.ndarray) -> None:
-        with self._torch.inference_mode():
-            self._predictor.set_image(image)
-
-    def predict(
-        self,
-        *,
-        point_coords: np.ndarray | None,
-        point_labels: np.ndarray | None,
-        box: np.ndarray | None,
-        box_label: int,
-        text: str | None,
-        threshold: float | None,
-        multimask_output: bool,
-    ) -> list[RawPrediction]:
-        del box_label, threshold
-        if text is not None:
-            raise ValueError("SAM 1 não aceita prompts de texto.")
-        with self._torch.inference_mode():
-            masks, scores, _ = self._predictor.predict(
-                point_coords=point_coords,
-                point_labels=point_labels,
-                box=box,
-                multimask_output=multimask_output,
-            )
-        return _predictions_from_arrays(masks, scores)
 
 
 class Sam2Adapter:
@@ -612,6 +573,10 @@ app.add_middleware(
     allow_headers=["Accept", "Content-Type"],
 )
 
+_app_dir: Path = Path.home() / ".visionlabel-sam"
+_startup_port: int = 7860
+_switch_lock = threading.Lock()
+_switch_target: str | None = None
 _runtime_lock = threading.Lock()
 _predictor_lock = threading.Lock()
 _request_state_lock = threading.Lock()
@@ -713,8 +678,6 @@ def _build_adapter(config: LoadConfig) -> EngineAdapter:
     if config.spec.family == "sam3":
         _validate_sam3_runtime(device)
 
-    if config.spec.family == "sam1":
-        return Sam1Adapter(config.spec, checkpoint, device)
     if config.spec.family == "sam2":
         model_config = config.model_config or config.spec.default_config
         if not model_config:
@@ -772,6 +735,136 @@ async def allow_local_browser_access(request: Request, call_next):
     if origin and _origin_is_allowed(origin):
         response.headers["Access-Control-Allow-Private-Network"] = "true"
     return response
+
+
+def _family_python(family: str) -> Path:
+    """Interpretador do venv da familia, no layout criado pelos instaladores."""
+    if os.name == "nt":
+        return _app_dir / "venvs" / family / "Scripts" / "python.exe"
+    return _app_dir / "venvs" / family / "bin" / "python"
+
+
+def _model_checkpoint(spec: ModelSpec) -> Path:
+    return _app_dir / "models" / spec.model_id / spec.checkpoint_name
+
+
+def _model_availability(spec: ModelSpec) -> dict[str, Any]:
+    """Diz se o modelo pode ser carregado agora e, quando nao, por que."""
+    runtime = _runtime_snapshot()
+    interpreter = _family_python(spec.family)
+    checkpoint = _model_checkpoint(spec)
+    if spec.model_id == runtime.get("model_id"):
+        # O modelo em uso vale como instalado mesmo se o checkpoint veio de outro
+        # caminho via --checkpoint.
+        runtime_missing = False
+        checkpoint_missing = False
+    else:
+        runtime_missing = not interpreter.is_file()
+        checkpoint_missing = not (checkpoint.is_file() and checkpoint.stat().st_size > 0)
+    reasons = []
+    if runtime_missing:
+        reasons.append(f"runtime da familia {spec.family} nao instalado")
+    if checkpoint_missing:
+        reasons.append("checkpoint ausente")
+    return {
+        "model_id": spec.model_id,
+        "family": spec.family,
+        "capabilities": list(spec.capabilities),
+        "installed": not reasons,
+        "loaded": spec.model_id == runtime.get("model_id"),
+        "unavailable_reason": "; ".join(reasons) or None,
+    }
+
+
+@app.get("/models")
+def models():
+    runtime = _runtime_snapshot()
+    return {
+        "service": SERVICE_NAME,
+        "api_version": API_VERSION,
+        "loaded_model_id": runtime.get("model_id"),
+        "status": runtime.get("status"),
+        "switching_to": _switch_target,
+        "models": [_model_availability(spec) for spec in MODEL_SPECS.values()],
+    }
+
+
+class LoadRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    model_id: str
+
+
+def _exec_with_model(spec: ModelSpec, port: int) -> None:
+    """Substitui este processo pelo mesmo conector no venv da familia pedida.
+
+    Usar execv preserva o PID, o terminal e o processo pai, de modo que os
+    instaladores que aguardam o conector continuam funcionando.
+    """
+    interpreter = str(_family_python(spec.family))
+    argv = [
+        interpreter,
+        str(Path(__file__).resolve()),
+        "--model",
+        spec.model_id,
+        "--checkpoint",
+        str(_model_checkpoint(spec)),
+    ]
+    if spec.default_config:
+        argv += ["--model-config", spec.default_config]
+    argv += ["--device", "auto", "--port", str(port), "--app-dir", str(_app_dir)]
+    print(f"Trocando para {spec.model_id}; recarregando o conector...", flush=True)
+    sys.stdout.flush()
+    sys.stderr.flush()
+    try:
+        os.execv(interpreter, argv)
+    except OSError as error:  # o processo continua vivo; o estado precisa refletir isso
+        global _switch_target
+        _switch_target = None
+        _update_runtime(
+            status="error",
+            error=f"nao foi possivel recarregar o conector: {error}",
+        )
+
+
+@app.post("/load")
+def load(payload: LoadRequest):
+    global _switch_target
+    requested = MODEL_ALIASES.get(payload.model_id, payload.model_id)
+    spec = MODEL_SPECS.get(requested)
+    if spec is None:
+        raise HTTPException(status_code=400, detail=f"model_id desconhecido: {payload.model_id}")
+
+    runtime = _runtime_snapshot()
+    if spec.model_id == runtime.get("model_id") and runtime.get("status") == "ready":
+        return {"status": "ready", "model_id": spec.model_id, "switching": False}
+
+    availability = _model_availability(spec)
+    if not availability["installed"]:
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"{spec.model_id} ainda nao esta instalado: "
+                f"{availability['unavailable_reason']}. Rode o instalador para este modelo."
+            ),
+        )
+
+    with _switch_lock:
+        if _switch_target is not None:
+            raise HTTPException(
+                status_code=409,
+                detail=f"uma troca para {_switch_target} ja esta em andamento.",
+            )
+        _switch_target = spec.model_id
+
+    _update_runtime(status="loading", error=None)
+    # A resposta precisa sair antes do execv, senao o cliente perde a conexao.
+    threading.Timer(
+        0.4,
+        _exec_with_model,
+        args=(spec, _startup_port),
+    ).start()
+    return {"status": "switching", "model_id": spec.model_id, "switching": True}
 
 
 @app.get("/")
@@ -1186,19 +1279,16 @@ def predict(payload: PredictionRequest):
     }
 
 
-def _legacy_model_id(model_type: str | None) -> str:
-    return f"sam1-{(model_type or 'vit_b').replace('_', '-')}"
-
-
 def main() -> None:
     global _startup_config
     parser = argparse.ArgumentParser(
-        description="Executa SAM 1, SAM 2.1 ou SAM 3 localmente para o VisionLabel."
+        description="Executa SAM 2.1 ou SAM 3 localmente para o VisionLabel."
     )
     parser.add_argument(
         "--model",
+        required=True,
         choices=sorted((*MODEL_SPECS, *MODEL_ALIASES)),
-        help="Engine/modelo. Sem esta opção, --model-type seleciona SAM 1.",
+        help="Engine/modelo a carregar.",
     )
     parser.add_argument(
         "--checkpoint",
@@ -1206,21 +1296,25 @@ def main() -> None:
         help="Caminho para o checkpoint local; nenhum arquivo é baixado pelo conector.",
     )
     parser.add_argument(
-        "--model-type",
-        choices=["vit_b", "vit_l", "vit_h"],
-        help="Opção legada para SAM 1; o padrão legado continua sendo vit_b.",
-    )
-    parser.add_argument(
         "--model-config",
         help="Nome de configuração Hydra do SAM 2; usa o nome oficial da variante por padrão.",
     )
     parser.add_argument("--device", choices=["auto", "cpu", "cuda", "mps"], default="auto")
     parser.add_argument("--port", type=int, default=7860)
+    parser.add_argument(
+        "--app-dir",
+        help="Raiz das instalações locais; permite trocar de modelo por /load.",
+    )
     args = parser.parse_args()
     if not 1 <= args.port <= 65_535:
         parser.error("--port deve estar entre 1 e 65535")
 
-    requested_model_id = args.model or _legacy_model_id(args.model_type)
+    global _app_dir, _startup_port
+    if args.app_dir:
+        _app_dir = Path(args.app_dir).expanduser().resolve()
+    _startup_port = args.port
+
+    requested_model_id = args.model
     model_id = MODEL_ALIASES.get(requested_model_id, requested_model_id)
     spec = MODEL_SPECS[model_id]
     _startup_config = LoadConfig(

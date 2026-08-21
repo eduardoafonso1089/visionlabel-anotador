@@ -45,7 +45,7 @@ function statusLabel(state: ConnectionState, modelMatches: boolean) {
   if (state === "loading") return "Modelo carregando…";
   if (state === "error") return "O conector foi encontrado, mas o modelo falhou ao carregar";
   if (state === "ready" && modelMatches) return "Modelo selecionado pronto";
-  if (state === "ready") return "Outro modelo está carregado";
+  if (state === "ready") return "Outro modelo está carregado; usar este vai trocá-lo";
   return "Conector não encontrado";
 }
 
@@ -57,17 +57,10 @@ function benchmarkSummary(model: (typeof SAM_MODELS)[number]) {
       details: `SA-V ${model.benchmark.saVJAndF} · MOSE ${model.benchmark.moseJAndF} · LVOS ${model.benchmark.lvosV2JAndF} J&F. ${model.benchmark.software}`,
     };
   }
-  if (model.benchmark.kind === "sam3-image-concepts") {
-    return {
-      value: `${model.benchmark.latencyMs} ms`,
-      label: model.benchmark.hardware,
-      details: "Imagem com mais de 100 objetos, segundo o benchmark publicado pela Meta",
-    };
-  }
   return {
-    value: "Sem FPS comparável",
-    label: "Benchmark oficial",
-    details: "A Meta não publicou uma tabela equivalente de FPS por backbone SAM 1.",
+    value: `${model.benchmark.latencyMs} ms`,
+    label: model.benchmark.hardware,
+    details: "Imagem com mais de 100 objetos, segundo o benchmark publicado pela Meta",
   };
 }
 
@@ -92,12 +85,10 @@ export default function SamSetupModal({
     .map(([capability]) => capabilityLabels[capability as keyof typeof capabilityLabels]);
   const unixCommand = `bash visionlabel-sam-macos-linux.sh ${model.id}`;
   const windowsCommand = `visionlabel-sam-windows.bat ${model.id}`;
-  const windowsPlatformLabel = model.family === "sam1" ? "Windows nativo" : "Windows · WSL2";
+  const windowsPlatformLabel = "Windows · WSL2";
   const unixPlatformLabel = model.family === "sam3"
     ? "Linux · NVIDIA CUDA"
-    : model.family === "sam2"
-      ? "Linux · macOS (CPU) · WSL2"
-      : "Linux · macOS · WSL2";
+    : "Linux · macOS (CPU) · WSL2";
 
   return <div className="modal-backdrop sam-catalog-backdrop">
     <section className="sam-catalog-modal" role="dialog" aria-modal="true" aria-labelledby="sam-catalog-title">
@@ -108,8 +99,8 @@ export default function SamSetupModal({
 
       <div className="sam-catalog-body">
         <aside className="sam-model-list" aria-label="Modelos disponíveis">
-          {(["sam2", "sam3", "sam1"] as const).map((family) => <section key={family}>
-            <h3>{family === "sam1" ? "SAM 1 · compatibilidade" : family === "sam2" ? "SAM 2.1 · recomendado" : "SAM 3 · conceitos"}</h3>
+          {(["sam2", "sam3"] as const).map((family) => <section key={family}>
+            <h3>{family === "sam2" ? "SAM 2.1 · recomendado" : "SAM 3 · conceitos"}</h3>
             {SAM_MODELS.filter((candidate) => candidate.family === family).map((candidate) => <button
               key={candidate.id}
               className={candidate.id === model.id ? "active" : ""}
@@ -176,7 +167,7 @@ export default function SamSetupModal({
 
           <section className={`sam-runtime-status ${connectionState} ${connectionState === "ready" && !modelMatches ? "mismatch" : ""}`}>
             <span />
-            <div><b>{statusLabel(connectionState, modelMatches)}</b>{runtimeLabel && <small>{runtimeLabel}</small>}{connectionState === "error" && <small>Revise o checkpoint, a versão do CUDA e as dependências; depois reinicie o conector.</small>}{connectionState === "ready" && !modelMatches && <small>Reinicie o conector com <code>{model.id}</code>.</small>}</div>
+            <div><b>{statusLabel(connectionState, modelMatches)}</b>{runtimeLabel && <small>{runtimeLabel}</small>}{connectionState === "error" && <small>Revise o checkpoint, a versão do CUDA e as dependências; depois reinicie o conector.</small>}{connectionState === "ready" && !modelMatches && <small>Clique em “Carregar este modelo” para trocar o conector para <code>{model.id}</code>, sem reiniciar nada à mão.</small>}</div>
           </section>
 
           <details className="sam-advanced">
@@ -191,9 +182,15 @@ export default function SamSetupModal({
 
       <footer>
         <button onClick={onClose}>Fechar</button>
-        <button className="connect" disabled={connectionState === "checking"} onClick={onConnect}>
-          {connectionState === "checking" ? <Gauge className="spin" size={15} /> : <Link2 size={15} />}
-          {modelMatches ? "Usar este modelo" : "Verificar e usar"}
+        <button className="connect" disabled={connectionState === "checking" || connectionState === "loading"} onClick={onConnect}>
+          {connectionState === "checking" || connectionState === "loading" ? <Gauge className="spin" size={15} /> : <Link2 size={15} />}
+          {connectionState === "loading"
+            ? "Carregando modelo…"
+            : modelMatches
+              ? "Usar este modelo"
+              : connectionState === "ready"
+                ? "Carregar este modelo"
+                : "Verificar e usar"}
         </button>
       </footer>
     </section>

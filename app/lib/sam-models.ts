@@ -1,4 +1,4 @@
-export type SamModelFamily = "sam1" | "sam2" | "sam3";
+export type SamModelFamily = "sam2" | "sam3";
 
 export type SamPlatformSupportLevel =
   | "supported"
@@ -75,7 +75,7 @@ export type SamCapabilities = {
 };
 
 export type SamOfficialBenchmark = {
-  kind: "not-comparable" | "sam2-video" | "sam3-image-concepts";
+  kind: "sam2-video" | "sam3-image-concepts";
   hardware: string;
   software: string | null;
   fps: number | null;
@@ -169,25 +169,6 @@ const SAM_LICENSE = {
     "Licença própria da Meta, diferente de Apache 2.0. A distribuição deve preservar os termos e há restrições adicionais de uso; valide juridicamente antes de disponibilizar em produção.",
 } as const;
 
-const SAM1_CAPABILITIES = {
-  imageSegmentation: true,
-  videoSegmentation: false,
-  pointPrompts: true,
-  negativePointPrompts: true,
-  boxPrompts: true,
-  maskPrompts: true,
-  textPrompts: false,
-  exemplarPrompts: false,
-  automaticMaskGeneration: true,
-  multimaskCandidates: true,
-  interactiveRefinement: true,
-  instanceSegmentation: true,
-  conceptSegmentation: false,
-  videoTracking: false,
-  multiObjectTracking: false,
-  bidirectionalPropagation: false,
-} as const satisfies SamCapabilities;
-
 const SAM2_CAPABILITIES = {
   imageSegmentation: true,
   videoSegmentation: true,
@@ -226,45 +207,6 @@ const SAM3_IMAGE_CAPABILITIES = {
   multiObjectTracking: true,
   bidirectionalPropagation: true,
 } as const satisfies SamCapabilities;
-
-const SAM1_REQUIREMENTS = {
-  python: {
-    minimum: "3.10",
-    notes: "O pacote upstream aceita Python 3.8+, mas o conector unificado do VisionLabel requer Python 3.10+.",
-  },
-  pytorch: {
-    minimum: "1.7",
-    torchvisionMinimum: "0.8",
-  },
-  cuda: {
-    required: false,
-    minimum: null,
-    notes: "CUDA não é obrigatório, mas a Meta recomenda fortemente instalar PyTorch e Torchvision com suporte CUDA.",
-  },
-  compute: {
-    cpuSupported: true,
-    gpu: "recommended",
-    notes: "Pode executar em CPU; uma GPU CUDA reduz sensivelmente a latência do encoder de imagem.",
-  },
-  ram: {
-    officialMinimumGb: null,
-    notes: "A Meta não publica um mínimo de RAM; é necessário comportar o checkpoint, o runtime do PyTorch e a imagem.",
-  },
-  vram: {
-    officialMinimumGb: null,
-    notes: "A Meta não publica um mínimo de VRAM; o uso varia com backbone, resolução e precisão numérica.",
-  },
-  operatingSystem: {
-    official: "Ambiente compatível com Python e PyTorch",
-    notes: "O repositório oficial não publica uma matriz de suporte por sistema operacional.",
-  },
-  access: {
-    type: "public",
-    requiresAccount: false,
-    requiresTermsAcceptance: false,
-    notes: "Download direto dos checkpoints oficiais, sem autenticação.",
-  },
-} as const satisfies SamRequirements;
 
 const SAM2_REQUIREMENTS = {
   python: {
@@ -346,25 +288,6 @@ const SAM3_REQUIREMENTS = {
   },
 } as const satisfies SamRequirements;
 
-const SAM1_PLATFORM_SUPPORT = {
-  linux: {
-    level: "recommended",
-    notes: "Melhor caminho para backend Python com aceleração CUDA.",
-  },
-  windows: {
-    level: "not-documented",
-    notes: "Pode funcionar conforme o suporte do PyTorch, mas a Meta não publica uma matriz oficial por SO.",
-  },
-  macos: {
-    level: "not-documented",
-    notes: "CPU pode funcionar conforme o suporte do PyTorch; CUDA não está disponível.",
-  },
-  browser: {
-    level: "partial",
-    notes: "O decoder leve possui exportação ONNX oficial; o encoder completo continua fora do navegador no fluxo demonstrado.",
-  },
-} as const satisfies SamModelDefinition["platformSupport"];
-
 const SAM2_PLATFORM_SUPPORT = {
   linux: {
     level: "recommended",
@@ -402,22 +325,6 @@ const SAM3_PLATFORM_SUPPORT = {
     notes: "O modelo oficial completo é executado no backend CUDA; não há build oficial para navegador.",
   },
 } as const satisfies SamModelDefinition["platformSupport"];
-
-const SAM1_BENCHMARK = {
-  kind: "not-comparable",
-  hardware: "Não especificado como tabela de FPS no catálogo oficial",
-  software: null,
-  fps: null,
-  latencyMs: null,
-  saVJAndF: null,
-  moseJAndF: null,
-  lvosV2JAndF: null,
-  notes: [
-    "O paper publica métricas de qualidade, mas não uma tabela de FPS por ViT-B/L/H diretamente comparável ao benchmark atual do SAM 2.1.",
-    "Não estime latência entre variantes apenas pelo tamanho do checkpoint.",
-  ],
-  sourceUrl: "https://ai.meta.com/research/publications/segment-anything/",
-} as const satisfies SamOfficialBenchmark;
 
 function sam2Benchmark(
   fps: number,
@@ -491,13 +398,6 @@ export const SAM_3_1_VIDEO_CAPABILITY_NOTE = {
   sourceUrl: "https://github.com/facebookresearch/sam3/blob/main/RELEASE_SAM3p1.md",
 } as const satisfies SamFutureCapability;
 
-const SAM1_SOURCES = {
-  repository: "https://github.com/facebookresearch/segment-anything",
-  documentation: "https://github.com/facebookresearch/segment-anything#readme",
-  paper: "https://ai.meta.com/research/publications/segment-anything/",
-  checkpoint: "https://github.com/facebookresearch/segment-anything#model-checkpoints",
-} as const;
-
 const SAM2_SOURCES = {
   repository: "https://github.com/facebookresearch/sam2",
   documentation: "https://github.com/facebookresearch/sam2#readme",
@@ -513,102 +413,6 @@ const SAM3_SOURCES = {
 } as const;
 
 export const SAM_MODELS = [
-  {
-    id: "sam1-vit-b",
-    family: "sam1",
-    version: "1",
-    name: "SAM 1 ViT-B",
-    recommended: false,
-    experimental: false,
-    installable: true,
-    parameters: { count: 91_000_000, label: "91M" },
-    checkpoint: {
-      fileName: "sam_vit_b_01ec64.pth",
-      approximateSizeBytes: 375_042_383,
-      approximateSizeLabel: "~375 MB",
-      format: "PyTorch .pth",
-      downloadUrl: "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_b_01ec64.pth",
-      gated: false,
-      notes: "Menor checkpoint oficial do SAM 1 e o mais adequado para compatibilidade com instalações antigas.",
-    },
-    license: APACHE_2_LICENSE,
-    description:
-      "SAM original para segmentação interativa de imagens. É o menor dos três backbones ViT oficiais, mas não oferece memória temporal nem tracking de vídeo.",
-    capabilities: SAM1_CAPABILITIES,
-    capabilityNotes: [
-      "Aceita pontos positivos/negativos, caixas e uma máscara de baixa resolução para refinamento.",
-      "Não possui prompt textual nativo nem tracking de vídeo.",
-    ],
-    requirements: SAM1_REQUIREMENTS,
-    benchmark: SAM1_BENCHMARK,
-    platformSupport: SAM1_PLATFORM_SUPPORT,
-    futureCapabilities: [],
-    officialSources: SAM1_SOURCES,
-  },
-  {
-    id: "sam1-vit-l",
-    family: "sam1",
-    version: "1",
-    name: "SAM 1 ViT-L",
-    recommended: false,
-    experimental: false,
-    installable: true,
-    parameters: { count: 308_000_000, label: "308M" },
-    checkpoint: {
-      fileName: "sam_vit_l_0b3195.pth",
-      approximateSizeBytes: 1_249_524_607,
-      approximateSizeLabel: "~1.25 GB",
-      format: "PyTorch .pth",
-      downloadUrl: "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_l_0b3195.pth",
-      gated: false,
-      notes: "Variante intermediária do SAM 1, maior e mais pesada que ViT-B.",
-    },
-    license: APACHE_2_LICENSE,
-    description:
-      "Variante intermediária do SAM original para imagens, com encoder ViT-L e o mesmo conjunto de prompts do ViT-B.",
-    capabilities: SAM1_CAPABILITIES,
-    capabilityNotes: [
-      "Aceita pontos positivos/negativos, caixas e uma máscara de baixa resolução para refinamento.",
-      "Não possui prompt textual nativo nem tracking de vídeo.",
-    ],
-    requirements: SAM1_REQUIREMENTS,
-    benchmark: SAM1_BENCHMARK,
-    platformSupport: SAM1_PLATFORM_SUPPORT,
-    futureCapabilities: [],
-    officialSources: SAM1_SOURCES,
-  },
-  {
-    id: "sam1-vit-h",
-    family: "sam1",
-    version: "1",
-    name: "SAM 1 ViT-H",
-    recommended: false,
-    experimental: false,
-    installable: true,
-    parameters: { count: 636_000_000, label: "636M" },
-    checkpoint: {
-      fileName: "sam_vit_h_4b8939.pth",
-      approximateSizeBytes: 2_564_550_879,
-      approximateSizeLabel: "~2.56 GB",
-      format: "PyTorch .pth",
-      downloadUrl: "https://dl.fbaipublicfiles.com/segment_anything/sam_vit_h_4b8939.pth",
-      gated: false,
-      notes: "Maior checkpoint do SAM 1 e alias `default` no repositório original da Meta.",
-    },
-    license: APACHE_2_LICENSE,
-    description:
-      "Maior variante do SAM original para imagens. Preserva compatibilidade com o primeiro ecossistema SAM, ao custo do maior checkpoint da família.",
-    capabilities: SAM1_CAPABILITIES,
-    capabilityNotes: [
-      "Aceita pontos positivos/negativos, caixas e uma máscara de baixa resolução para refinamento.",
-      "Não possui prompt textual nativo nem tracking de vídeo.",
-    ],
-    requirements: SAM1_REQUIREMENTS,
-    benchmark: SAM1_BENCHMARK,
-    platformSupport: SAM1_PLATFORM_SUPPORT,
-    futureCapabilities: [],
-    officialSources: SAM1_SOURCES,
-  },
   {
     id: "sam2.1-hiera-tiny",
     family: "sam2",
